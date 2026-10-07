@@ -39,7 +39,7 @@ cross-tenant test every new table must have.
 Dev Supabase project: `lms-exam-saas` (ref `uprhdpwfztdeifhktwww`,
 `ap-south-1`), separate from any other project on the account per
 SECURITY.md §2 ("Use separate Supabase projects and keys for development
-and production"). Migrations 0001-0008 are already applied there.
+and production"). Migrations 0001-0009 are already applied there.
 
 **First login**: migration `0006_seed_super_admin.sql` seeds one
 `super_admin` so there's a way into `/platform` before any UI exists to
@@ -57,3 +57,21 @@ Get your `SUPABASE_SERVICE_ROLE_KEY` from the Supabase dashboard
 `.env.local` — it's required for signup/profile-provisioning server code
 and the `/platform` screens, and is deliberately not something this
 session can fetch for you.
+
+## Auth
+
+Email + password is the only live sign-in method. Tenant-scoped signup
+(`/sign-up` on a tenant subdomain) always creates a `student` — there's
+no self-serve way to become an instructor or owner.
+
+Phone OTP is fully implemented and rate-limited
+(`src/lib/auth/actions.ts`: `sendPhoneOtp` / `verifyPhoneOtp`) but not
+wired into the sign-in UI yet, because this Supabase project has no SMS
+provider configured — `signInWithOtp` will error until one is set up in
+the dashboard (Authentication → Providers → Phone). Once configured,
+adding it to the sign-in page is a small UI addition, not new server
+logic.
+
+Rate limits: 5 signups/hour and 10 logins/15 min per IP, 3 OTP
+sends/hour per phone number (10/hour per IP) — see
+`supabase/migrations/0009_rate_limiting.sql`.

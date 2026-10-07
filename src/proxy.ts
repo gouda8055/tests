@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { createServerClient } from "@supabase/ssr";
 
 import { publicEnv } from "@/lib/env";
 import { resolveTenantFromHost } from "@/lib/tenant/resolve";
@@ -50,5 +51,34 @@ export async function proxy(request: NextRequest) {
     requestHeaders.set(TENANT_SUBDOMAIN_HEADER, resolution.institute.subdomain);
   }
 
-  return NextResponse.next({ request: { headers: requestHeaders } });
+  let response = NextResponse.next({ request: { headers: requestHeaders } });
+
+  // Refresh the Supabase session on every request. Only Server Actions and
+  // Route Handlers can write cookies — a Server Component can't — so
+  // without this, a token that expires mid-session would only get
+  // refreshed the next time a form action happens to run. No `domain` is
+  // set (Supabase's default), keeping the cookies host-only: a session on
+  // one tenant subdomain never reaches another (SECURITY.md §3).
+  const supabase = createServerClient(
+    publicEnv.NEXT_PUBLIC_SUPABASE_URL,
+    publicEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+          response = NextResponse.next({ request: { headers: requestHeaders } });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            response.cookies.set(name, value, options),
+          );
+        },
+      },
+    },
+  );
+
+  await supabase.auth.getUser();
+
+  return response;
 }
