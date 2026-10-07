@@ -75,3 +75,17 @@ logic.
 Rate limits: 5 signups/hour and 10 logins/15 min per IP, 3 OTP
 sends/hour per phone number (10/hour per IP) — see
 `supabase/migrations/0009_rate_limiting.sql`.
+
+## Running the RLS and end-to-end tests
+
+`pnpm test` and `pnpm test:e2e` both include suites
+(`tests/rls/tenant-isolation.test.ts`,
+`e2e/signup-login-dashboard.spec.ts`) that create and delete real rows
+against a live Supabase project. They skip automatically — not fail —
+when `SUPABASE_SERVICE_ROLE_KEY` isn't set in `.env.local`, so
+`pnpm test` stays green without it.
+
+To run them for real, set a real `SUPABASE_SERVICE_ROLE_KEY` and run
+`pnpm test` / `pnpm test:e2e` (the latter starts `pnpm dev` for you).
+**Point these only at a development project, never production** — they
+create and tear down test institutes and users on every run.

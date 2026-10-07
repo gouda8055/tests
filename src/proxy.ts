@@ -78,7 +78,18 @@ export async function proxy(request: NextRequest) {
     },
   );
 
-  await supabase.auth.getUser();
+  try {
+    // Errors here are a transient Supabase/network problem, not an
+    // invalid session — letting one propagate would 500 every request
+    // (even for an already-valid, not-actually-expiring session) during
+    // a brief outage. Worst case on failure: this request's token isn't
+    // proactively refreshed; createServerClient() in Server
+    // Actions/Route Handlers still refreshes reactively when a call
+    // actually needs it.
+    await supabase.auth.getUser();
+  } catch (error) {
+    console.error("Supabase session refresh failed in proxy.ts:", error);
+  }
 
   return response;
 }
