@@ -10,6 +10,21 @@ export const createInstituteSchema = z.object({
       /^[a-z0-9]+(-[a-z0-9]+)*$/,
       "Lowercase letters, digits and single hyphens only.",
     ),
+  logoUrl: z
+    .string()
+    .trim()
+    .url("Enter a valid URL.")
+    .max(2048)
+    .optional()
+    .or(z.literal(""))
+    .transform((value) => (value === "" ? undefined : value)),
+  primaryColor: z
+    .string()
+    .trim()
+    .regex(/^#[0-9a-fA-F]{6}$/, "Enter a hex color, e.g. #1a73e8.")
+    .optional()
+    .or(z.literal(""))
+    .transform((value) => (value === "" ? undefined : value)),
 });
 
 export const assignOwnerSchema = z.object({

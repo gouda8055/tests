@@ -32,6 +32,8 @@ export async function createInstitute(
   const parsed = createInstituteSchema.safeParse({
     name: formData.get("name"),
     subdomain: formData.get("subdomain"),
+    logoUrl: formData.get("logoUrl"),
+    primaryColor: formData.get("primaryColor"),
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
@@ -44,7 +46,12 @@ export async function createInstitute(
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("institutes")
-    .insert({ name: parsed.data.name, subdomain: parsed.data.subdomain })
+    .insert({
+      name: parsed.data.name,
+      subdomain: parsed.data.subdomain,
+      logo_url: parsed.data.logoUrl ?? null,
+      primary_color: parsed.data.primaryColor ?? null,
+    })
     .select("id")
     .single();
 

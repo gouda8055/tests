@@ -20,6 +20,14 @@ export function CreateInstituteForm() {
         <Label htmlFor="subdomain">Subdomain</Label>
         <Input id="subdomain" name="subdomain" type="text" placeholder="acme" required />
       </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="logoUrl">Logo URL (optional)</Label>
+        <Input id="logoUrl" name="logoUrl" type="url" placeholder="https://…" />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="primaryColor">Primary color (optional)</Label>
+        <Input id="primaryColor" name="primaryColor" type="text" placeholder="#1a73e8" />
+      </div>
       {state && "error" in state ? (
         <p className="text-destructive text-sm">{state.error}</p>
       ) : null}
