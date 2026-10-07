@@ -59,11 +59,33 @@ test.describe("signup, login, dashboard", () => {
       .from("profiles")
       .select("id")
       .eq("institute_id", instituteId);
+
+    const { error: auditError } = await admin
+      .from("audit_logs")
+      .delete()
+      .eq("institute_id", instituteId);
+    if (auditError) console.warn(`cleanup: audit_logs delete failed for ${instituteId}: ${auditError.message}`);
+
+    // Delete profiles directly before the institutes delete below, rather
+    // than relying on deleteUser's cascade (a separate system, not this
+    // transaction) to have landed already — institutes.profiles_institute_id_fkey
+    // is RESTRICT, so a lagging cascade silently orphans the institute row.
+    const { error: profileError } = await admin
+      .from("profiles")
+      .delete()
+      .eq("institute_id", instituteId);
+    if (profileError) console.warn(`cleanup: profiles delete failed for ${instituteId}: ${profileError.message}`);
+
+    const { error: instituteError } = await admin
+      .from("institutes")
+      .delete()
+      .eq("id", instituteId);
+    if (instituteError) console.warn(`cleanup: institute delete failed for ${instituteId}: ${instituteError.message}`);
+
     for (const profile of profiles ?? []) {
-      await admin.auth.admin.deleteUser(profile.id);
+      const { error: userError } = await admin.auth.admin.deleteUser(profile.id);
+      if (userError) console.warn(`cleanup: auth user delete failed for ${profile.id}: ${userError.message}`);
     }
-    await admin.from("audit_logs").delete().eq("institute_id", instituteId);
-    await admin.from("institutes").delete().eq("id", instituteId);
   });
 
   test("sign up, land on the student dashboard, sign out, sign back in", async ({

@@ -100,9 +100,40 @@ describe.skipIf(!CREDENTIALS_AVAILABLE)(
     afterAll(async () => {
       for (const fixture of [a, b]) {
         if (!fixture) continue;
-        await admin.from("audit_logs").delete().eq("institute_id", fixture.instituteId);
-        await admin.auth.admin.deleteUser(fixture.userId);
-        await admin.from("institutes").delete().eq("id", fixture.instituteId);
+        const { error: auditError } = await admin
+          .from("audit_logs")
+          .delete()
+          .eq("institute_id", fixture.instituteId);
+        if (auditError) {
+          console.warn(`cleanup: audit_logs delete failed for ${fixture.instituteId}: ${auditError.message}`);
+        }
+
+        // Delete the profile directly instead of relying on deleteUser's
+        // cascade to land before the institutes delete below: that cascade
+        // runs in the Auth system, not this transaction, so there's no
+        // guarantee it's visible yet. institutes.profiles_institute_id_fkey
+        // is RESTRICT, so any lag here silently orphans the institute row
+        // (reproduced: a leaked "rls-test-a-*" institute from this exact race).
+        const { error: profileError } = await admin
+          .from("profiles")
+          .delete()
+          .eq("id", fixture.userId);
+        if (profileError) {
+          console.warn(`cleanup: profile delete failed for ${fixture.userId}: ${profileError.message}`);
+        }
+
+        const { error: instituteError } = await admin
+          .from("institutes")
+          .delete()
+          .eq("id", fixture.instituteId);
+        if (instituteError) {
+          console.warn(`cleanup: institute delete failed for ${fixture.instituteId}: ${instituteError.message}`);
+        }
+
+        const { error: userError } = await admin.auth.admin.deleteUser(fixture.userId);
+        if (userError) {
+          console.warn(`cleanup: auth user delete failed for ${fixture.userId}: ${userError.message}`);
+        }
       }
     }, 30_000);
 
