@@ -12,6 +12,10 @@
 
 # testing
 /coverage
+/test-results/
+
+# local dev tooling (Browser pane launch config, not project config)
+/.claude/
 
 # next.js
 /.next/

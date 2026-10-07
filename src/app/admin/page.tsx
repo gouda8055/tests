@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { requireTenantRole } from "@/lib/auth/guard";
 import { signOut } from "@/lib/auth/actions";
 import { Button } from "@/components/ui/button";
@@ -11,6 +13,9 @@ export default async function AdminPage() {
       <p className="text-muted-foreground text-sm">
         Signed in as {profile.fullName ?? profile.id} ({profile.role})
       </p>
+      <Button asChild className="self-start">
+        <Link href="/admin/courses">Manage courses</Link>
+      </Button>
       <form action={signOut}>
         <Button type="submit" variant="outline">
           Sign out

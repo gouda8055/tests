@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { requireTenantRole } from "@/lib/auth/guard";
 import { signOut } from "@/lib/auth/actions";
 import { Button } from "@/components/ui/button";
@@ -11,6 +13,9 @@ export default async function StudentPage() {
       <p className="text-muted-foreground text-sm">
         Welcome, {profile.fullName ?? profile.id}
       </p>
+      <Button asChild className="self-start">
+        <Link href="/student/courses">Browse courses</Link>
+      </Button>
       <form action={signOut}>
         <Button type="submit" variant="outline">
           Sign out
