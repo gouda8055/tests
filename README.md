@@ -20,18 +20,40 @@ edits needed), e.g. `http://acme.localtest.me:3000`.
 
 ## Scripts
 
-| Command | Purpose |
-|---|---|
-| `pnpm dev` | Start the dev server |
-| `pnpm build` | Production build |
-| `pnpm lint` | ESLint |
-| `pnpm typecheck` | `tsc --noEmit` |
-| `pnpm format` / `format:check` | Prettier |
-| `pnpm test` | Vitest (unit + RLS tests) |
-| `pnpm test:e2e` | Playwright end-to-end tests |
+| Command                        | Purpose                     |
+| ------------------------------ | --------------------------- |
+| `pnpm dev`                     | Start the dev server        |
+| `pnpm build`                   | Production build            |
+| `pnpm lint`                    | ESLint                      |
+| `pnpm typecheck`               | `tsc --noEmit`              |
+| `pnpm format` / `format:check` | Prettier                    |
+| `pnpm test`                    | Vitest (unit + RLS tests)   |
+| `pnpm test:e2e`                | Playwright end-to-end tests |
 
 ## Database migrations
 
 Versioned SQL lives in `supabase/migrations`. RLS is the enforced tenant
 boundary — see `SECURITY.md` §1 for the required pattern and the
 cross-tenant test every new table must have.
+
+Dev Supabase project: `lms-exam-saas` (ref `uprhdpwfztdeifhktwww`,
+`ap-south-1`), separate from any other project on the account per
+SECURITY.md §2 ("Use separate Supabase projects and keys for development
+and production"). Migrations 0001-0008 are already applied there.
+
+**First login**: migration `0006_seed_super_admin.sql` seeds one
+`super_admin` so there's a way into `/platform` before any UI exists to
+create one:
+
+- email: `superadmin@example.com`
+- password: `ChangeMe!12345`
+
+This password is a public placeholder committed to this repo — it is
+**not a secret**. Sign in and rotate it immediately on any project this
+migration is applied to beyond local development.
+
+Get your `SUPABASE_SERVICE_ROLE_KEY` from the Supabase dashboard
+(Project Settings → API → service_role secret key) and put it in
+`.env.local` — it's required for signup/profile-provisioning server code
+and the `/platform` screens, and is deliberately not something this
+session can fetch for you.
