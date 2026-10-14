@@ -1,13 +1,14 @@
 # Handoff
 
 Everything below reflects the state of `claude/security-multi-tenant-lms-e5198b`
-after Stage 3. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
-lessons, enrollment, video, quizzes/exams), and Stage 3 (scheduled quiz-
-attempt auto-expiry) are all built, committed, and pushed — to this branch
-directly, which is this repo's default branch (there's no separate `main`;
+after Stage 4. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
+lessons, enrollment, video, quizzes/exams), Stage 3 (scheduled quiz-attempt
+auto-expiry), and Stage 4 (unenroll, bulk question import, gradebook
+export) are all built, committed, and pushed — to this branch directly,
+which is this repo's default branch (there's no separate `main`;
 everything lands here straight, no PR workflow). `README.md` has setup
 steps, `SECURITY.md` is the mandatory rulebook. This file is the map, in
-the order the three stages happened.
+the order the four stages happened.
 
 ## Access you'll need
 
@@ -15,7 +16,7 @@ the order the three stages happened.
   (the default branch — push here directly).
 - **Supabase project**: `lms-exam-saas`, ref `uprhdpwfztdeifhktwww`, region
   `ap-south-1`. Separate from any other project on the account — see
-  SECURITY.md §2. Migrations `0001`–`0020` are applied.
+  SECURITY.md §2. Migrations `0001`–`0021` are applied.
 - **`.env.local`** (gitignored, create it yourself): real
   `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` are in the
   README's Getting Started section. **`SUPABASE_SERVICE_ROLE_KEY` is not in
@@ -175,9 +176,8 @@ independent of this.
    reproduces in your environment or was specific to the sandbox.
 4. Set a real `CRON_SECRET` and a cron schedule for your actual Vercel plan
    — see the Stage 3 section below.
-5. Decide on a Stage 4 scope — there's no brief for it yet. Natural
-   candidates: a gradebook/results export for instructors, unenroll, or
-   bulk question import.
+5. Decide on a Stage 5 scope — there's no brief for it yet now that
+   unenroll, bulk import, and gradebook export (Stage 4) are all done.
 
 ## Stage 3 — scheduled quiz-attempt auto-expiry
 
@@ -250,11 +250,95 @@ every relevant request regardless, so day-to-day correctness never depends
 on this cron's frequency — only on how fast a stale attempt's status
 reflects in a staff-facing list before that happens anyway.
 
+## Stage 4 — unenroll, bulk question import, gradebook export
+
+### What's built
+
+- **Unenroll** (`supabase/migrations/0021_enrollments_delete.sql`,
+  `src/lib/enrollment/actions.ts`'s `unenrollFromCourse`) — enrollment had
+  no delete policy at all before this (self-enroll was one-way, by
+  design, through Stage 3). The new policy mirrors `courses_update`'s
+  creator-check shape: a student always deletes their own enrollment; an
+  institute_owner deletes any in their institute; an instructor only in a
+  course they created. One action serves both the roster's "Remove"
+  button (staff) and the student course page's "Unenroll" button (self) —
+  `unenrollFromCourse` just picks the right success message, the RLS
+  policy is what actually decides whether either succeeds. No cascade
+  concerns: nothing references `enrollments.id`, so a removed student's
+  lesson/quiz history is untouched.
+- **Bulk question import**
+  (`src/lib/csv.ts`, `src/lib/quizzes/csv-import.ts`,
+  `importQuestions` in `src/lib/quizzes/actions.ts`,
+  `.../questions/import/page.tsx`) — paste a CSV
+  (`question_text,points,option_1,...,correct_options`, 2-10 option
+  columns, `;`-separated 1-based `correct_options` indices; question type
+  is inferred from how many are marked correct) and get every question
+  inserted in one shot, through the exact same
+  question+options+answer-key insert shape `createQuestion` already used.
+  Every row's errors are collected and reported at once (line-numbered)
+  rather than stopping at the first, and the whole import is all-or-
+  nothing: a failure partway through archives whatever this import
+  already created. Every text cell gets `stripFormulaPrefix()`'d
+  (SECURITY.md §5's CSV-injection defense) before it's stored.
+- **Gradebook export**
+  (`.../quizzes/[quizId]/export/route.ts`) — a GET Route Handler that
+  reuses the attempts page's exact data loading (same
+  `finalizeExpiredAttempts` lazy sweep, same `getStudentNames`) and writes
+  a CSV with a UTF-8 BOM (so Excel renders non-ASCII names correctly).
+  Every cell — including app-authored names/statuses, not just anything
+  a student typed — gets `stripFormulaPrefix()`'d too; SECURITY.md §5's
+  CSV-injection rule is a blanket one for anything that becomes a CSV
+  cell, not only user-supplied text. Rate-limited
+  (`checkRateLimit("quiz.export", ...)`) per SECURITY.md §5's "rate limit
+  ... exports" line.
+- **`src/lib/csv.ts`** — the one new piece of real logic this stage
+  needed: `parseCsv`/`toCsvRow`/`stripFormulaPrefix`, pure functions with
+  no `server-only`/env dependency, shared by the importer and the
+  exporter. Directly unit-tested (`tests/unit/csv.test.ts`,
+  `tests/unit/csv-import.test.ts` — 26 tests between them).
+
+### Verified
+
+- `tests/rls/enrollment-unenroll.test.ts` (new, live): student deletes own
+  enrollment vs. another student's (0 rows); the course's creator-
+  instructor can remove a student vs. an instructor who didn't create it
+  (0 rows); institute_owner removes any enrollment in their institute; a
+  *different* institute's owner cannot touch this one's enrollment (0
+  rows) — the new RLS surface this stage actually added, so this is the
+  one place real new coverage was needed.
+- **No Vitest test calls `importQuestions`/`unenrollFromCourse` as bare
+  functions**, for the same reason the Stage 3 cron logic couldn't be:
+  both are `"use server"` actions that call `next/cache`'s `refresh()`
+  (and in `unenrollFromCourse`'s and `createQuestion`'s case,
+  `getClientIp()` too), which need a real Next.js request-handling scope
+  a bare Vitest call doesn't have.
+- `e2e/stage4.spec.ts` (new, Playwright against the real dev server):
+  owner bulk-imports 2 questions via the textarea, publishes the quiz,
+  fetches `/export` directly (via `context.request`, sharing the signed-
+  in page's cookies — unlike the cron spec, this route needs a real
+  session, not an API secret) and checks the CSV body contains the
+  seeded attempt's row; removes a student from the roster; a second
+  student self-unenrolls. One real UI behavior worth knowing if you
+  touch either button: the server action's `refresh()` re-renders the
+  whole list/page the instant the delete lands, so the removed row (or
+  the "not enrolled" branch replacing the enrolled one) appears
+  immediately — there's no lingering on-screen "success" message to wait
+  for, because the component showing it is itself removed from the tree
+  in that same update. Assert on the row/branch changing, not on success
+  text, for either unenroll path.
+- Hit one real, unrelated flake while running this spec repeatedly during
+  development: `checkRateLimit("login", 10, 900)` is keyed by IP with no
+  per-test identifier, so running this spec (2 real sign-ins each) back
+  to back several times in a row can trip the same 15-minute login rate
+  limit a real attacker would — confirmed by the sign-in page literally
+  showing "Too many attempts." This is the rate limiter working
+  correctly, not a bug; if you hit it while developing against this spec,
+  wait a few minutes rather than suspecting the new code.
+
 ## Known gaps (not failures — out of scope so far)
 
 Everything from Stage 1's list that's still open, plus:
 
-- Unenroll (self-enroll only, by design, for this stage).
 - A real-time concurrent-`startAttempt` race on `max_attempts`: two
   simultaneous requests can both pass the count check before either
   commits, letting a student get one extra attempt. Documented in
@@ -262,8 +346,6 @@ Everything from Stage 1's list that's still open, plus:
   either serializable isolation or a server-assigned attempt sequence
   number, deferred as low-severity (fairness, not a score/data-integrity
   issue).
-- Bulk question import, gradebook export, CSV formula-stripping (no CSV
-  import exists yet to need it).
 
 ## Architecture decisions worth knowing before you extend this
 

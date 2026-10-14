@@ -53,27 +53,31 @@ export const quizIdSchema = z.object({ quizId: z.string().uuid() });
 
 export const questionTypeSchema = z.enum(["single_choice", "multiple_choice"]);
 
-const optionTextSchema = z
+export const optionTextSchema = z
   .string()
   .trim()
   .min(1, "Option text can't be empty.")
   .max(1_000, "Option text is too long (1,000 characters max).");
 
+export const questionTextSchema = z
+  .string()
+  .trim()
+  .min(1, "Question text is required.")
+  .max(10_000, "Question text is too long (10,000 characters max).");
+
+export const pointsSchema = z.coerce
+  .number({ error: "Enter the points for this question." })
+  .positive("Points must be greater than 0.")
+  .max(1_000);
+
 const questionFields = z.object({
-  questionText: z
-    .string()
-    .trim()
-    .min(1, "Question text is required.")
-    .max(10_000, "Question text is too long (10,000 characters max)."),
+  questionText: questionTextSchema,
   questionType: questionTypeSchema,
-  points: z.coerce
-    .number({ error: "Enter the points for this question." })
-    .positive("Points must be greater than 0.")
-    .max(1_000),
+  points: pointsSchema,
   explanation: optionalText(10_000),
 });
 
-function checkCorrectCount(
+export function checkCorrectCount(
   questionType: z.infer<typeof questionTypeSchema>,
   options: { correct: boolean }[],
   ctx: z.RefinementCtx,
@@ -144,3 +148,37 @@ export const saveAnswerSchema = z.object({
 });
 
 export const submitAttemptSchema = z.object({ attemptId: z.string().uuid() });
+
+/**
+ * Bulk question import (Stage 4). Validates only the envelope (quizId +
+ * a size cap on the pasted text); src/lib/quizzes/csv-import.ts does the
+ * per-row CSV parsing and validates each parsed row against
+ * importedQuestionSchema below, reusing the exact same field constraints
+ * single-question authoring uses (questionTextSchema, optionTextSchema,
+ * pointsSchema, checkCorrectCount).
+ */
+export const importQuestionsSchema = z.object({
+  quizId: z.string().uuid(),
+  csvText: z
+    .string()
+    .min(1, "Paste some CSV text first.")
+    .max(200_000, "That's too much text to import at once (200,000 characters max)."),
+});
+
+export const importedQuestionSchema = z
+  .object({
+    questionText: questionTextSchema,
+    points: pointsSchema,
+    options: z
+      .array(z.object({ text: optionTextSchema, correct: z.boolean() }))
+      .max(10, "At most 10 options."),
+  })
+  .superRefine((value, ctx) =>
+    checkCorrectCount(
+      value.options.filter((option) => option.correct).length === 1
+        ? "single_choice"
+        : "multiple_choice",
+      value.options,
+      ctx,
+    ),
+  );

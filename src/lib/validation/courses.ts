@@ -29,6 +29,10 @@ export const courseIdSchema = z.object({
   courseId: z.string().uuid(),
 });
 
+export const enrollmentIdSchema = z.object({
+  enrollmentId: z.string().uuid(),
+});
+
 const lessonFields = z.object({
   title: z.string().trim().min(1, "Title is required.").max(200),
   // Markdown, rendered via react-markdown without raw HTML (SECURITY.md §5).

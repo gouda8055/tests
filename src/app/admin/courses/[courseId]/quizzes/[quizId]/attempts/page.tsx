@@ -7,6 +7,7 @@ import { formatDateTime, formatScore } from "@/lib/format";
 import { finalizeExpiredAttempts } from "@/lib/quizzes/grading";
 import { createServerClient } from "@/lib/supabase/server";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -64,11 +65,16 @@ export default async function QuizAttemptsPage({
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 p-8">
-      <div>
-        <Link href={base} className="text-muted-foreground text-sm hover:underline">
-          ← {quiz.title}
-        </Link>
-        <h1 className="mt-2 text-xl font-semibold">Attempts</h1>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <Link href={base} className="text-muted-foreground text-sm hover:underline">
+            ← {quiz.title}
+          </Link>
+          <h1 className="mt-2 text-xl font-semibold">Attempts</h1>
+        </div>
+        <Button asChild size="sm" variant="outline">
+          <a href={`${base}/export`}>Export CSV</a>
+        </Button>
       </div>
       <Card>
         <CardHeader>

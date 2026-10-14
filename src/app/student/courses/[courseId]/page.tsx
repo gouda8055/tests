@@ -2,9 +2,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { requireTenantRole } from "@/lib/auth/guard";
+import { unenrollFromCourse } from "@/lib/enrollment/actions";
 import { formatDuration } from "@/lib/format";
 import { createServerClient } from "@/lib/supabase/server";
 import { EnrollForm } from "@/components/courses/enroll-form";
+import { ConfirmActionDialog } from "@/components/shared/confirm-action-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default async function StudentCoursePage({
@@ -50,18 +52,30 @@ export default async function StudentCoursePage({
 
   return (
     <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 p-8">
-      <div>
-        <Link
-          href="/student/courses"
-          className="text-muted-foreground text-sm hover:underline"
-        >
-          ← Courses
-        </Link>
-        <h1 className="mt-2 text-xl font-semibold">{course.title}</h1>
-        {course.description ? (
-          <p className="text-muted-foreground mt-1 text-sm whitespace-pre-wrap">
-            {course.description}
-          </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <Link
+            href="/student/courses"
+            className="text-muted-foreground text-sm hover:underline"
+          >
+            ← Courses
+          </Link>
+          <h1 className="mt-2 text-xl font-semibold">{course.title}</h1>
+          {course.description ? (
+            <p className="text-muted-foreground mt-1 text-sm whitespace-pre-wrap">
+              {course.description}
+            </p>
+          ) : null}
+        </div>
+        {enrollment ? (
+          <ConfirmActionDialog
+            action={unenrollFromCourse}
+            fields={[["enrollmentId", enrollment.id]]}
+            triggerLabel="Unenroll"
+            title="Unenroll from this course?"
+            description="You'll lose access to its lessons and quizzes until you re-enroll. Your existing attempt records are kept."
+            confirmLabel="Confirm unenroll"
+          />
         ) : null}
       </div>
 

@@ -7,11 +7,14 @@ import { requireTenantRole, type SessionProfile } from "@/lib/auth/guard";
 import { logAudit } from "@/lib/audit/log";
 import { canManage } from "@/lib/courses/ownership";
 import { formCheckbox, formField, formFields } from "@/lib/form-data";
+import { parseQuestionsCsv } from "@/lib/quizzes/csv-import";
+import { checkRateLimit } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/request-ip";
 import { createServerClient } from "@/lib/supabase/server";
 import {
   createQuestionSchema,
   createQuizSchema,
+  importQuestionsSchema,
   questionIdSchema,
   quizIdSchema,
   setQuizStatusSchema,
@@ -609,4 +612,126 @@ export async function archiveQuestion(
 
   refresh();
   return { success: "Question archived." };
+}
+
+/**
+ * Bulk question import (Stage 4). parseQuestionsCsv() (src/lib/quizzes/
+ * csv-import.ts) does all CSV parsing/validation up front and returns
+ * every row's errors at once; this function only runs once parsing
+ * succeeds, and rejects the whole import atomically if any insert fails
+ * partway through (archives whatever questions this import already
+ * created) — same fallback createQuestion() uses for a single question,
+ * just looped.
+ */
+export async function importQuestions(
+  _prevState: QuizActionState,
+  formData: FormData,
+): Promise<QuizActionState> {
+  const actor = await requireTenantRole(["institute_owner", "instructor"]);
+
+  const allowed = await checkRateLimit("quiz.questions.import", 10, 3600, actor.id);
+  if (!allowed) return { error: "Too many imports. Try again later." };
+
+  const parsed = importQuestionsSchema.safeParse({
+    quizId: formField(formData, "quizId"),
+    csvText: formField(formData, "csvText"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
+  }
+  if (!actor.instituteId) return { error: "Could not import questions." };
+
+  const supabase = await createServerClient();
+  const loaded = await loadManageableQuiz(supabase, actor, parsed.data.quizId);
+  if (!loaded.ok) return { error: loaded.error };
+
+  const result = parseQuestionsCsv(parsed.data.csvText);
+  if (!result.ok) return { error: result.errors.join("\n") };
+
+  const { data: last } = await supabase
+    .from("quiz_questions")
+    .select("position")
+    .eq("quiz_id", parsed.data.quizId)
+    .order("position", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let nextPosition = (last?.position ?? -1) + 1;
+  const createdQuestionIds: string[] = [];
+
+  for (const question of result.questions) {
+    const { data: inserted, error: questionError } = await supabase
+      .from("quiz_questions")
+      .insert({
+        institute_id: actor.instituteId,
+        quiz_id: parsed.data.quizId,
+        position: nextPosition,
+        question_text: question.questionText,
+        question_type: question.options.filter((o) => o.correct).length === 1
+          ? "single_choice"
+          : "multiple_choice",
+        points: question.points,
+      })
+      .select("id")
+      .single();
+
+    if (questionError || !inserted) {
+      await archiveImportedQuestions(supabase, createdQuestionIds);
+      return { error: "Could not save the imported questions. Nothing was imported." };
+    }
+    createdQuestionIds.push(inserted.id as string);
+    nextPosition += 1;
+
+    const { data: insertedOptions, error: optionsError } = await supabase
+      .from("quiz_question_options")
+      .insert(
+        question.options.map((option, position) => ({
+          institute_id: actor.instituteId,
+          question_id: inserted.id,
+          position,
+          option_text: option.text,
+        })),
+      )
+      .select("id, position");
+
+    const correctOptionIds = (insertedOptions ?? [])
+      .filter((row) => question.options[row.position as number]?.correct)
+      .map((row) => row.id as string);
+
+    const keyError =
+      optionsError || !insertedOptions || correctOptionIds.length === 0
+        ? true
+        : (
+            await supabase.from("quiz_answer_keys").insert({
+              institute_id: actor.instituteId,
+              question_id: inserted.id,
+              correct_option_ids: correctOptionIds,
+            })
+          ).error;
+
+    if (keyError) {
+      await archiveImportedQuestions(supabase, createdQuestionIds);
+      return { error: "Could not save the imported questions. Nothing was imported." };
+    }
+  }
+
+  await logAudit({
+    instituteId: actor.instituteId,
+    actorId: actor.id,
+    action: "quiz.questions.imported",
+    target: parsed.data.quizId,
+    metadata: { quizId: parsed.data.quizId, count: createdQuestionIds.length },
+    ip: await getClientIp(),
+  });
+
+  refresh();
+  return { success: `Imported ${createdQuestionIds.length} question${createdQuestionIds.length === 1 ? "" : "s"}.` };
+}
+
+async function archiveImportedQuestions(supabase: Supabase, questionIds: string[]) {
+  if (questionIds.length === 0) return;
+  await supabase
+    .from("quiz_questions")
+    .update({ archived_at: new Date().toISOString() })
+    .in("id", questionIds);
 }

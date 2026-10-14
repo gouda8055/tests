@@ -2,9 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { requireTenantRole } from "@/lib/auth/guard";
+import { canManage } from "@/lib/courses/ownership";
 import { getStudentNames } from "@/lib/courses/student-names";
+import { unenrollFromCourse } from "@/lib/enrollment/actions";
 import { formatDateTime } from "@/lib/format";
 import { createServerClient } from "@/lib/supabase/server";
+import { ConfirmActionDialog } from "@/components/shared/confirm-action-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -26,10 +29,12 @@ export default async function CourseRosterPage({
   const supabase = await createServerClient();
   const { data: course } = await supabase
     .from("courses")
-    .select("id, title")
+    .select("id, title, created_by")
     .eq("id", courseId)
     .maybeSingle();
   if (!course) notFound();
+
+  const canRemoveStudents = canManage(profile, course.created_by);
 
   // RLS (0011) lets institute staff read every enrollment in their institute.
   const { data: enrollments } = await supabase
@@ -74,6 +79,7 @@ export default async function CourseRosterPage({
                   <TableHead>Student</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Enrolled</TableHead>
+                  {canRemoveStudents ? <TableHead /> : null}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -88,6 +94,18 @@ export default async function CourseRosterPage({
                     <TableCell className="text-muted-foreground">
                       {formatDateTime(enrollment.enrolled_at)}
                     </TableCell>
+                    {canRemoveStudents ? (
+                      <TableCell className="text-right">
+                        <ConfirmActionDialog
+                          action={unenrollFromCourse}
+                          fields={[["enrollmentId", enrollment.id]]}
+                          triggerLabel="Remove"
+                          title="Remove this student from the course?"
+                          description="They'll need to re-enroll to access lessons and quizzes again. Their existing attempt records are kept."
+                          confirmLabel="Remove student"
+                        />
+                      </TableCell>
+                    ) : null}
                   </TableRow>
                 ))}
               </TableBody>

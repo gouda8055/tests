@@ -122,9 +122,14 @@ export default async function AdminQuizPage({
 
         <TabsContent value="questions" className="flex flex-col gap-4 pt-2">
           {editable ? (
-            <Button asChild size="sm" className="self-start">
-              <Link href={`${base}/questions/new`}>Add question</Link>
-            </Button>
+            <div className="flex gap-2">
+              <Button asChild size="sm" className="self-start">
+                <Link href={`${base}/questions/new`}>Add question</Link>
+              </Button>
+              <Button asChild size="sm" variant="outline" className="self-start">
+                <Link href={`${base}/questions/import`}>Bulk import</Link>
+              </Button>
+            </div>
           ) : null}
           {questionList.length === 0 ? (
             <p className="text-muted-foreground text-sm">No questions yet.</p>
