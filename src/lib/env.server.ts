@@ -23,6 +23,12 @@ const serverEnvSchema = z.object({
   BUNNY_STREAM_API_KEY: optionalString,
   BUNNY_STREAM_TOKEN_AUTH_KEY: optionalString,
   BUNNY_STREAM_CDN_HOSTNAME: optionalString,
+  // Vercel Cron (Stage 3 quiz-attempt auto-expiry). Optional: the cron
+  // route refuses to run until this is set, rather than running
+  // unauthenticated — same "dormant until configured" treatment as Bunny
+  // above. Vercel sends `Authorization: Bearer ${CRON_SECRET}` automatically
+  // on scheduled invocations once this env var exists on the project.
+  CRON_SECRET: optionalString,
 });
 
 function parseServerEnv() {
@@ -32,6 +38,7 @@ function parseServerEnv() {
     BUNNY_STREAM_API_KEY: process.env.BUNNY_STREAM_API_KEY,
     BUNNY_STREAM_TOKEN_AUTH_KEY: process.env.BUNNY_STREAM_TOKEN_AUTH_KEY,
     BUNNY_STREAM_CDN_HOSTNAME: process.env.BUNNY_STREAM_CDN_HOSTNAME,
+    CRON_SECRET: process.env.CRON_SECRET,
   });
 
   if (!parsed.success) {

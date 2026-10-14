@@ -1,12 +1,13 @@
 # Handoff
 
 Everything below reflects the state of `claude/security-multi-tenant-lms-e5198b`
-as of commit `36b67dd`. Stage 1 (tenancy, auth, platform admin) and Stage 2
-(courses, lessons, enrollment, video, quizzes/exams) are both built,
-committed, and pushed — to this branch directly, which is this repo's
-default branch (there's no separate `main`; everything lands here straight,
-no PR workflow). `README.md` has setup steps, `SECURITY.md` is the mandatory
-rulebook. This file is the map, in the order the two stages happened.
+after Stage 3. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
+lessons, enrollment, video, quizzes/exams), and Stage 3 (scheduled quiz-
+attempt auto-expiry) are all built, committed, and pushed — to this branch
+directly, which is this repo's default branch (there's no separate `main`;
+everything lands here straight, no PR workflow). `README.md` has setup
+steps, `SECURITY.md` is the mandatory rulebook. This file is the map, in
+the order the three stages happened.
 
 ## Access you'll need
 
@@ -28,6 +29,11 @@ rulebook. This file is the map, in the order the two stages happened.
   four `BUNNY_STREAM_*` env vars in `.env.example` are optional — video
   playback degrades to a clear "not configured" message until you add a
   real account. See the Stage 2 section below.
+- **`CRON_SECRET`** (Stage 3): protects `/api/cron/finalize-expired-attempts`.
+  Not set in the repo. Generate one (`openssl rand -hex 32`), put it in
+  `.env.local` for local testing and in the deployment platform's env vars
+  for production — see the Stage 3 section below for how this is verified
+  without it ever being committed anywhere.
 
 ## Stage 2 — courses, lessons, enrollment, video, quizzes/exams
 
@@ -167,19 +173,87 @@ independent of this.
    `.env.local`.
 3. Try `e2e/course-quiz-flow.spec.ts` yourself — see if the flake above
    reproduces in your environment or was specific to the sandbox.
-4. Decide on a Stage 3 scope — there's no brief for it yet. Natural
-   candidates: a gradebook/results export for instructors, unenroll, bulk
-   question import, or finally wiring up the quiz-attempt auto-expiry via a
-   real cron instead of the lazy on-touch finalize.
+4. Set a real `CRON_SECRET` and a cron schedule for your actual Vercel plan
+   — see the Stage 3 section below.
+5. Decide on a Stage 4 scope — there's no brief for it yet. Natural
+   candidates: a gradebook/results export for instructors, unenroll, or
+   bulk question import.
+
+## Stage 3 — scheduled quiz-attempt auto-expiry
+
+### What's built
+
+Stage 2 shipped grading with a **lazy** finalize: `finalizeIfExpired()` in
+`grading.ts` only flips a stale `in_progress` attempt to `timed_out` (and
+grades it) the next time anyone's request happens to touch that attempt —
+correct (the real deadline is enforced at the RLS layer regardless), but an
+attempt a student just abandons can sit `in_progress` indefinitely if no
+one ever loads it again. Stage 3 adds the "real cron" from Stage 2's
+known-gaps list, reusing that exact same logic instead of reimplementing
+it:
+
+- **`src/lib/quizzes/cron.ts`** — `finalizeAllExpiredAttempts()`: lists
+  every `in_progress` attempt across every institute (service-role,
+  `limit 500` per sweep so one backlog can't make a single run unbounded —
+  a larger backlog just drains over subsequent runs), filters to the ones
+  past `attemptDeadline()`, and calls the *same* `finalizeIfExpired()` on
+  each. No grading logic is duplicated or reimplemented in SQL — this is
+  deliberately the one reason "Vercel Cron → Route Handler" was chosen over
+  Supabase `pg_cron` (which would have needed the exact-match scoring logic
+  rewritten in SQL, risking drift from `grading.ts` over time).
+- **`src/app/api/cron/finalize-expired-attempts/route.ts`** — the Vercel
+  Cron target. Checks `Authorization: Bearer ${CRON_SECRET}` before doing
+  anything; returns 500 if `CRON_SECRET` isn't configured at all (refuses
+  to run unauthenticated rather than silently no-op'ing — same "dormant
+  until configured" treatment Stage 2 gave Bunny Stream), 401 on a
+  missing/wrong secret. Vercel sends that header automatically on every
+  scheduled invocation once `CRON_SECRET` exists as a project env var — no
+  extra wiring needed on Vercel's side.
+- **`vercel.json`** — defines the schedule: `0 3 * * *` (once daily) by
+  default, because that's the frequency every Vercel plan supports. **If
+  you're on Pro or above, tighten this** — e.g. `*/15 * * * *` — for a
+  timelier gradebook view of stale attempts. This only changes how quickly
+  the UI reflects a timeout; it can never affect exam integrity, since the
+  RLS deadline on `quiz_attempt_answers` (Stage 2, `0018`) rejects a late
+  write regardless of whether this cron has run yet.
+
+### Verified
+
+No real cron scheduler exists in dev, so this was verified the way it will
+actually run in production: a real HTTP request hitting the real Next.js
+route. `finalizeIfExpired()` calls `logAudit()` → `getClientIp()` →
+`next/headers`' `headers()`, which only works inside an actual Next.js
+request scope — calling `finalizeAllExpiredAttempts()` as a bare function
+from a Vitest test throws `headers() was called outside a request scope`,
+confirmed firsthand while building this. So this is **not** covered by the
+Vitest RLS suites (which never spin up the Next.js server) — it's
+`e2e/cron-finalize-expired-attempts.spec.ts` instead, a Playwright spec that
+uses the `request` fixture (no browser page needed) against the real `pnpm
+dev` server Playwright's `webServer` config already starts. It covers: 401
+with no/wrong secret and no side effects, 200 + correct grading + status
+flip for a backdated stale attempt with the right secret, and idempotency
+(a second sweep leaves an already-finalized attempt untouched). Also
+reconfirmed clean `lint`/`typecheck`/`build` after adding the route (Next 16
+Cache Components rejects the route-segment `dynamic = "force-dynamic"`
+export that's otherwise standard in older Next docs/training data — a
+Route Handler that reads `headers()`/env secrets is dynamic by default
+under Cache Components already, so the export isn't needed; just leave it
+out).
+
+### If you don't know your Vercel plan yet
+
+The default `0 3 * * *` schedule works on every plan including Hobby (free)
+— Hobby limits cron jobs to once a day, so this ships "as scheduled" to
+work out of the box rather than guessing a frequency that might fail to
+deploy. The lazy `finalizeIfExpired()` path from Stage 2 still runs on
+every relevant request regardless, so day-to-day correctness never depends
+on this cron's frequency — only on how fast a stale attempt's status
+reflects in a staff-facing list before that happens anyway.
 
 ## Known gaps (not failures — out of scope so far)
 
 Everything from Stage 1's list that's still open, plus:
 
-- A real cron/scheduled job for quiz-attempt auto-expiry (currently lazy —
-  an expired attempt only gets graded the next time anyone touches it; see
-  `finalizeIfExpired` in `grading.ts` for the exact mechanism and why
-  attempt-limit correctness doesn't depend on it ever running).
 - Unenroll (self-enroll only, by design, for this stage).
 - A real-time concurrent-`startAttempt` race on `max_attempts`: two
   simultaneous requests can both pass the count check before either
