@@ -32,6 +32,7 @@ export type QuizFormValues = {
   randomizeQuestions: boolean;
   randomizeOptions: boolean;
   showAnswersAfterSubmit: boolean;
+  poolSize: number | null;
 };
 
 /** Create (pass courseId) or edit (pass quiz) a quiz's settings. */
@@ -128,6 +129,21 @@ export function QuizForm({
             defaultValue={quiz?.maxAttempts ?? 1}
           />
         </div>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="quizPoolSize">Questions per attempt (optional)</Label>
+        <Input
+          id="quizPoolSize"
+          name="poolSize"
+          type="number"
+          min={1}
+          defaultValue={quiz?.poolSize ?? ""}
+          placeholder="Use every question"
+        />
+        <p className="text-muted-foreground text-xs">
+          Leave blank to show every question. Set a number to show that many,
+          randomly chosen, to each student each attempt.
+        </p>
       </div>
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2">

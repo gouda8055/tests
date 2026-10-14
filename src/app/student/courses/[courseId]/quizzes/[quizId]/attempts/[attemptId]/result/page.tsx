@@ -63,7 +63,7 @@ export default async function StudentAttemptResultPage({
       await Promise.all([
         supabase
           .from("quiz_questions")
-          .select("id, question_text, points")
+          .select("id, question_text, question_type, points")
           .in("id", questionIds)
           .is("archived_at", null),
         supabase
@@ -73,7 +73,7 @@ export default async function StudentAttemptResultPage({
           .order("position", { ascending: true }),
         supabase
           .from("quiz_attempt_answers")
-          .select("question_id, selected_option_ids")
+          .select("question_id, selected_option_ids, text_answer")
           .eq("attempt_id", attempt.id),
         getAnswerKeysForReview(quiz.id, questionIds),
       ]);
@@ -82,18 +82,23 @@ export default async function StudentAttemptResultPage({
     const answerByQuestion = new Map(
       (answers ?? []).map((a) => [
         a.question_id as string,
-        a.selected_option_ids as string[],
+        {
+          selected: (a.selected_option_ids as string[]) ?? [],
+          text: (a.text_answer as string | null) ?? null,
+        },
       ]),
     );
     review = questionIds.flatMap((id) => {
       const question = questionById.get(id);
       if (!question) return [];
       const key = keys.get(id);
+      const answer = answerByQuestion.get(id);
       return [
         {
           id,
           text: question.question_text as string,
           points: Number(question.points),
+          type: question.question_type as ReviewQuestion["type"],
           options: orderOptions(
             (options ?? [])
               .filter((option) => option.question_id === id)
@@ -104,8 +109,10 @@ export default async function StudentAttemptResultPage({
             attempt.option_order,
             id,
           ),
-          selected: answerByQuestion.get(id) ?? [],
-          correct: key?.correctOptionIds ?? [],
+          selected: answer?.selected ?? [],
+          submittedText: answer?.text ?? null,
+          correctOptionIds: key?.correctOptionIds ?? null,
+          correctTextAnswers: key?.correctTextAnswers ?? null,
           explanation: key?.explanation ?? null,
         },
       ];

@@ -63,7 +63,7 @@ export default async function StudentAttemptPage({
       .order("position", { ascending: true }),
     supabase
       .from("quiz_attempt_answers")
-      .select("question_id, selected_option_ids")
+      .select("question_id, selected_option_ids, text_answer")
       .eq("attempt_id", attempt.id),
   ]);
 
@@ -93,9 +93,12 @@ export default async function StudentAttemptPage({
   });
 
   const initialAnswers: Record<string, string[]> = {};
+  const initialTextAnswers: Record<string, string> = {};
   for (const answer of answers ?? []) {
     initialAnswers[answer.question_id as string] =
       (answer.selected_option_ids as string[]) ?? [];
+    initialTextAnswers[answer.question_id as string] =
+      (answer.text_answer as string | null) ?? "";
   }
 
   return (
@@ -113,6 +116,7 @@ export default async function StudentAttemptPage({
         attemptId={attempt.id as string}
         questions={runnerQuestions}
         initialAnswers={initialAnswers}
+        initialTextAnswers={initialTextAnswers}
         remainingMs={msUntilTimeLimit(attempt)}
       />
     </main>

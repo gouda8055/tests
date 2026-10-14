@@ -15,17 +15,20 @@ import { saveAnswer, submitAttempt } from "@/lib/quizzes/attempt-actions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
 export type RunnerQuestion = {
   id: string;
-  type: "single_choice" | "multiple_choice";
+  type: "single_choice" | "multiple_choice" | "short_answer";
   points: number;
   /** Pre-rendered (server-side) markdown body. */
   body: ReactNode;
   options: { id: string; text: string }[];
 };
+
+type AnswerPayload = { selectedOptionIds: string[] } | { textAnswer: string };
 
 type SaveStatus =
   | { state: "pending" }
@@ -55,14 +58,18 @@ export function AttemptRunner({
   attemptId,
   questions,
   initialAnswers,
+  initialTextAnswers,
   remainingMs,
 }: {
   attemptId: string;
   questions: RunnerQuestion[];
   initialAnswers: Record<string, string[]>;
+  initialTextAnswers: Record<string, string>;
   remainingMs: number;
 }) {
   const [answers, setAnswers] = useState<Record<string, string[]>>(initialAnswers);
+  const [textAnswers, setTextAnswers] =
+    useState<Record<string, string>>(initialTextAnswers);
   const [statuses, setStatuses] = useState<Record<string, SaveStatus>>({});
   const [remaining, setRemaining] = useState(remainingMs);
   const [submitState, submitAction, submitting] = useActionState(
@@ -72,20 +79,20 @@ export function AttemptRunner({
   const [, startTransition] = useTransition();
 
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const queued = useRef(new Map<string, string[]>());
+  const queued = useRef(new Map<string, AnswerPayload>());
   const inFlight = useRef(new Set<Promise<void>>());
   const formRef = useRef<HTMLFormElement>(null);
   const autoSubmitted = useRef(false);
 
   const runSave = useCallback(
     (questionId: string) => {
-      const selected = queued.current.get(questionId);
+      const payload = queued.current.get(questionId);
       timers.current.delete(questionId);
-      if (!selected) return;
+      if (!payload) return;
       queued.current.delete(questionId);
 
       setStatuses((current) => ({ ...current, [questionId]: { state: "saving" } }));
-      const request: Promise<void> = saveAnswer(attemptId, questionId, selected)
+      const request: Promise<void> = saveAnswer(attemptId, questionId, payload)
         .then((result) => {
           setStatuses((current) => ({
             ...current,
@@ -112,16 +119,25 @@ export function AttemptRunner({
     [attemptId],
   );
 
-  function choose(questionId: string, selected: string[]) {
-    setAnswers((current) => ({ ...current, [questionId]: selected }));
+  function queueSave(questionId: string, payload: AnswerPayload) {
     setStatuses((current) => ({ ...current, [questionId]: { state: "pending" } }));
-    queued.current.set(questionId, selected);
+    queued.current.set(questionId, payload);
     const existing = timers.current.get(questionId);
     if (existing) clearTimeout(existing);
     timers.current.set(
       questionId,
       setTimeout(() => runSave(questionId), AUTOSAVE_DEBOUNCE_MS),
     );
+  }
+
+  function choose(questionId: string, selected: string[]) {
+    setAnswers((current) => ({ ...current, [questionId]: selected }));
+    queueSave(questionId, { selectedOptionIds: selected });
+  }
+
+  function chooseText(questionId: string, value: string) {
+    setTextAnswers((current) => ({ ...current, [questionId]: value }));
+    queueSave(questionId, { textAnswer: value });
   }
 
   async function flushSaves() {
@@ -162,8 +178,10 @@ export function AttemptRunner({
     };
   }, []);
 
-  const answeredCount = questions.filter(
-    (question) => (answers[question.id]?.length ?? 0) > 0,
+  const answeredCount = questions.filter((question) =>
+    question.type === "short_answer"
+      ? (textAnswers[question.id]?.trim().length ?? 0) > 0
+      : (answers[question.id]?.length ?? 0) > 0,
   ).length;
 
   return (
@@ -192,13 +210,23 @@ export function AttemptRunner({
                   {question.points} {question.points === 1 ? "point" : "points"} ·{" "}
                   {question.type === "single_choice"
                     ? "Choose one"
-                    : "Choose all that apply"}
+                    : question.type === "multiple_choice"
+                      ? "Choose all that apply"
+                      : "Type your answer"}
                 </span>
               </CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
               {question.body}
-              {question.type === "single_choice" ? (
+              {question.type === "short_answer" ? (
+                <Input
+                  id={`${question.id}-text`}
+                  aria-label="Your answer"
+                  value={textAnswers[question.id] ?? ""}
+                  disabled={remaining <= 0 || submitting}
+                  onChange={(event) => chooseText(question.id, event.target.value)}
+                />
+              ) : question.type === "single_choice" ? (
                 <RadioGroup
                   value={selected[0] ?? ""}
                   onValueChange={(value) => choose(question.id, [value])}

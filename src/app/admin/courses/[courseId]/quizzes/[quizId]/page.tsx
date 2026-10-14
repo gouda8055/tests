@@ -35,7 +35,7 @@ export default async function AdminQuizPage({
     supabase
       .from("quizzes")
       .select(
-        "id, course_id, lesson_id, created_by, title, description, status, archived_at, duration_seconds, grace_seconds, max_attempts, randomize_questions, randomize_options, show_answers_after_submit",
+        "id, course_id, lesson_id, created_by, title, description, status, archived_at, duration_seconds, grace_seconds, max_attempts, randomize_questions, randomize_options, show_answers_after_submit, pool_size",
       )
       .eq("id", quizId)
       .eq("course_id", courseId)
@@ -85,6 +85,9 @@ export default async function AdminQuizPage({
       <div className="flex flex-wrap items-start gap-2">
         <Button asChild variant="outline" size="sm">
           <Link href={`${base}/attempts`}>Attempts</Link>
+        </Button>
+        <Button asChild variant="outline" size="sm">
+          <Link href={`${base}/analytics`}>Analytics</Link>
         </Button>
         {editable && !quiz.archived_at ? (
           <>
@@ -155,7 +158,11 @@ export default async function AdminQuizPage({
                       </Link>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {question.question_type === "single_choice" ? "Single" : "Multiple"}
+                      {question.question_type === "single_choice"
+                        ? "Single"
+                        : question.question_type === "multiple_choice"
+                          ? "Multiple"
+                          : "Short answer"}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {Number(question.points)}
@@ -192,6 +199,7 @@ export default async function AdminQuizPage({
                 randomizeQuestions: quiz.randomize_questions,
                 randomizeOptions: quiz.randomize_options,
                 showAnswersAfterSubmit: quiz.show_answers_after_submit,
+                poolSize: quiz.pool_size,
               }}
             />
           </TabsContent>

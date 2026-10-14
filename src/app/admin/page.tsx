@@ -16,6 +16,14 @@ export default async function AdminPage() {
       <Button asChild className="self-start">
         <Link href="/admin/courses">Manage courses</Link>
       </Button>
+      {profile.role === "institute_owner" ? (
+        <Button asChild variant="outline" className="self-start">
+          <Link href="/admin/audit-log">Audit log</Link>
+        </Button>
+      ) : null}
+      <Button asChild variant="outline" className="self-start">
+        <Link href="/admin/settings">Settings</Link>
+      </Button>
       <form action={signOut}>
         <Button type="submit" variant="outline">
           Sign out

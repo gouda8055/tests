@@ -56,7 +56,7 @@ export async function startAttempt(
   const { data: quiz } = await supabase
     .from("quizzes")
     .select(
-      "id, course_id, duration_seconds, grace_seconds, max_attempts, randomize_questions, randomize_options",
+      "id, course_id, duration_seconds, grace_seconds, max_attempts, randomize_questions, randomize_options, pool_size",
     )
     .eq("id", parsed.data.quizId)
     .maybeSingle();
@@ -104,12 +104,26 @@ export async function startAttempt(
   const questionIds = (questions ?? []).map((question) => question.id as string);
   if (questionIds.length === 0) return { error: "This quiz has no questions yet." };
 
+  // "Pull N of M" pools: sample pool_size questions once here. Which
+  // questions get selected is always random, but their relative order
+  // reverts to the authored (position) order unless randomize_questions
+  // is also on below — pool selection and presentation order are
+  // independent settings. Everything downstream (including max_score
+  // derivation in grading.ts) operates purely off the persisted list this
+  // produces, so a smaller sampled list just means a smaller max_score,
+  // with no other code needing to know pools exist.
+  let pooledQuestionIds = questionIds;
+  if (quiz.pool_size && quiz.pool_size < questionIds.length) {
+    const sampled = new Set(shuffle([...questionIds]).slice(0, quiz.pool_size));
+    pooledQuestionIds = questionIds.filter((id) => sampled.has(id));
+  }
+
   const optionOrder: Record<string, string[]> = {};
   if (quiz.randomize_options) {
     const { data: options } = await supabase
       .from("quiz_question_options")
       .select("id, question_id")
-      .in("question_id", questionIds)
+      .in("question_id", pooledQuestionIds)
       .order("position", { ascending: true });
     const byQuestion = new Map<string, string[]>();
     for (const option of options ?? []) {
@@ -123,8 +137,8 @@ export async function startAttempt(
   }
 
   const questionOrder = quiz.randomize_questions
-    ? shuffle([...questionIds])
-    : questionIds;
+    ? shuffle([...pooledQuestionIds])
+    : pooledQuestionIds;
 
   const { data: attempt, error } = await supabase
     .from("quiz_attempts")
@@ -172,11 +186,16 @@ export async function startAttempt(
 export async function saveAnswer(
   attemptId: string,
   questionId: string,
-  selectedOptionIds: string[],
+  payload: { selectedOptionIds: string[] } | { textAnswer: string },
 ): Promise<AttemptActionState> {
   const actor = await requireTenantRole(["student"]);
 
-  const parsed = saveAnswerSchema.safeParse({ attemptId, questionId, selectedOptionIds });
+  const parsed = saveAnswerSchema.safeParse({
+    attemptId,
+    questionId,
+    selectedOptionIds: "selectedOptionIds" in payload ? payload.selectedOptionIds : undefined,
+    textAnswer: "textAnswer" in payload ? payload.textAnswer : undefined,
+  });
   if (!parsed.success) return { error: "Invalid answer." };
   if (!actor.instituteId) return { error: "Could not save your answer." };
 
@@ -199,29 +218,34 @@ export async function saveAnswer(
     return { error: "That question isn't part of this attempt." };
   }
 
-  const [{ data: question }, { data: options }] = await Promise.all([
-    supabase
-      .from("quiz_questions")
-      .select("id, question_type")
-      .eq("id", parsed.data.questionId)
-      .eq("quiz_id", attempt.quiz_id)
-      .maybeSingle(),
-    supabase
-      .from("quiz_question_options")
-      .select("id")
-      .eq("question_id", parsed.data.questionId),
-  ]);
+  const { data: question } = await supabase
+    .from("quiz_questions")
+    .select("id, question_type")
+    .eq("id", parsed.data.questionId)
+    .eq("quiz_id", attempt.quiz_id)
+    .maybeSingle();
   if (!question) return { error: "That question isn't part of this attempt." };
 
-  const validOptionIds = new Set((options ?? []).map((option) => option.id as string));
-  if (parsed.data.selectedOptionIds.some((id) => !validOptionIds.has(id))) {
-    return { error: "Invalid answer." };
-  }
-  if (
-    question.question_type === "single_choice" &&
-    parsed.data.selectedOptionIds.length > 1
-  ) {
-    return { error: "Choose only one option." };
+  let selectedOptionIds: string[] = [];
+  let textAnswer: string | null = null;
+
+  if (question.question_type === "short_answer") {
+    if (parsed.data.textAnswer === undefined) return { error: "Invalid answer." };
+    textAnswer = parsed.data.textAnswer;
+  } else {
+    const { data: options } = await supabase
+      .from("quiz_question_options")
+      .select("id")
+      .eq("question_id", parsed.data.questionId);
+    const validOptionIds = new Set((options ?? []).map((option) => option.id as string));
+    const ids = parsed.data.selectedOptionIds ?? [];
+    if (ids.some((id) => !validOptionIds.has(id))) {
+      return { error: "Invalid answer." };
+    }
+    if (question.question_type === "single_choice" && ids.length > 1) {
+      return { error: "Choose only one option." };
+    }
+    selectedOptionIds = ids;
   }
 
   const { data: previous } = await supabase
@@ -236,7 +260,8 @@ export async function saveAnswer(
       institute_id: actor.instituteId,
       attempt_id: attempt.id,
       question_id: parsed.data.questionId,
-      selected_option_ids: parsed.data.selectedOptionIds,
+      selected_option_ids: selectedOptionIds,
+      text_answer: textAnswer,
       answered_at: new Date().toISOString(),
     },
     { onConflict: "attempt_id,question_id" },

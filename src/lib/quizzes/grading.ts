@@ -1,8 +1,15 @@
 import "server-only";
 
 import { logAudit } from "@/lib/audit/log";
+import type { AnswerKeyRow, SubmittedAnswer } from "@/lib/quizzes/correctness";
+import { isQuestionCorrect } from "@/lib/quizzes/correctness";
 import { getClientIp } from "@/lib/request-ip";
 import { createAdminClient } from "@/lib/supabase/admin";
+
+// Re-exported so existing call sites (attempt-review.tsx) don't need to
+// know this logic lives in a separate, server-only-free module — see
+// src/lib/quizzes/correctness.ts for why it's split out.
+export { isQuestionCorrect, sameSet } from "@/lib/quizzes/correctness";
 
 /**
  * Quiz grading and lazy finalization.
@@ -117,19 +124,9 @@ export function parseQuestionOrder(value: unknown): string[] {
     : [];
 }
 
-function sameSet(a: string[], b: string[]): boolean {
-  const setA = new Set(a);
-  const setB = new Set(b);
-  if (setA.size !== setB.size) return false;
-  for (const value of setA) {
-    if (!setB.has(value)) return false;
-  }
-  return true;
-}
-
 /**
  * Exact-match, all-or-nothing scoring: a question earns its full points
- * only when the selected option set equals the answer-key set; otherwise 0.
+ * only when it's correct per isQuestionCorrect() above; otherwise 0.
  * Questions archived after the attempt started are treated as removed
  * (excluded from both score and max_score). Read-only — the write happens
  * in finalizeIfExpired(). Returns null if the grading data can't be read.
@@ -144,17 +141,17 @@ export async function gradeAttempt(
   const [questionsResult, keysResult, answersResult] = await Promise.all([
     admin
       .from("quiz_questions")
-      .select("id, points")
+      .select("id, points, question_type")
       .eq("quiz_id", attempt.quiz_id)
       .is("archived_at", null)
       .in("id", questionIds),
     admin
       .from("quiz_answer_keys")
-      .select("question_id, correct_option_ids")
+      .select("question_id, correct_option_ids, correct_text_answers")
       .in("question_id", questionIds),
     admin
       .from("quiz_attempt_answers")
-      .select("question_id, selected_option_ids")
+      .select("question_id, selected_option_ids, text_answer")
       .eq("attempt_id", attempt.id),
   ]);
 
@@ -168,13 +165,19 @@ export async function gradeAttempt(
     return null;
   }
 
-  const keys = new Map<string, string[]>();
+  const keys = new Map<string, AnswerKeyRow>();
   for (const row of keysResult.data ?? []) {
-    keys.set(row.question_id as string, (row.correct_option_ids as string[]) ?? []);
+    keys.set(row.question_id as string, {
+      correctOptionIds: (row.correct_option_ids as string[] | null) ?? null,
+      correctTextAnswers: (row.correct_text_answers as string[] | null) ?? null,
+    });
   }
-  const answers = new Map<string, string[]>();
+  const answers = new Map<string, SubmittedAnswer>();
   for (const row of answersResult.data ?? []) {
-    answers.set(row.question_id as string, (row.selected_option_ids as string[]) ?? []);
+    answers.set(row.question_id as string, {
+      selectedOptionIds: (row.selected_option_ids as string[]) ?? [],
+      textAnswer: (row.text_answer as string | null) ?? null,
+    });
   }
 
   let score = 0;
@@ -182,9 +185,15 @@ export async function gradeAttempt(
   for (const question of questionsResult.data ?? []) {
     const points = Number(question.points);
     maxScore += points;
-    const correct = keys.get(question.id as string);
-    const selected = answers.get(question.id as string);
-    if (correct && correct.length > 0 && selected && sameSet(selected, correct)) {
+    const key = keys.get(question.id as string);
+    if (
+      key &&
+      isQuestionCorrect(
+        question.question_type as string,
+        key,
+        answers.get(question.id as string),
+      )
+    ) {
       score += points;
     }
   }
@@ -290,10 +299,23 @@ export async function finalizeIfExpired(
 export async function getAnswerKeysForReview(
   quizId: string,
   questionIds: string[],
-): Promise<Map<string, { correctOptionIds: string[]; explanation: string | null }>> {
+): Promise<
+  Map<
+    string,
+    {
+      correctOptionIds: string[] | null;
+      correctTextAnswers: string[] | null;
+      explanation: string | null;
+    }
+  >
+> {
   const result = new Map<
     string,
-    { correctOptionIds: string[]; explanation: string | null }
+    {
+      correctOptionIds: string[] | null;
+      correctTextAnswers: string[] | null;
+      explanation: string | null;
+    }
   >();
   if (questionIds.length === 0) return result;
 
@@ -303,7 +325,9 @@ export async function getAnswerKeysForReview(
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("quiz_answer_keys")
-    .select("question_id, correct_option_ids, explanation, quiz_questions!inner(quiz_id)")
+    .select(
+      "question_id, correct_option_ids, correct_text_answers, explanation, quiz_questions!inner(quiz_id)",
+    )
     .eq("quiz_questions.quiz_id", quizId)
     .in("question_id", questionIds);
 
@@ -314,7 +338,8 @@ export async function getAnswerKeysForReview(
 
   for (const row of data ?? []) {
     result.set(row.question_id as string, {
-      correctOptionIds: (row.correct_option_ids as string[]) ?? [],
+      correctOptionIds: (row.correct_option_ids as string[] | null) ?? null,
+      correctTextAnswers: (row.correct_text_answers as string[] | null) ?? null,
       explanation: (row.explanation as string | null) ?? null,
     });
   }

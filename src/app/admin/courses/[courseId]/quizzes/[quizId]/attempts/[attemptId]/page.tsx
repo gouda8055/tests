@@ -56,7 +56,7 @@ export default async function AdminAttemptPage({
     await Promise.all([
       supabase
         .from("quiz_questions")
-        .select("id, question_text, points, archived_at")
+        .select("id, question_text, question_type, points, archived_at")
         .in("id", questionIds),
       supabase
         .from("quiz_question_options")
@@ -65,12 +65,12 @@ export default async function AdminAttemptPage({
         .order("position", { ascending: true }),
       supabase
         .from("quiz_attempt_answers")
-        .select("question_id, selected_option_ids")
+        .select("question_id, selected_option_ids, text_answer")
         .eq("attempt_id", attempt.id),
       // Session client: returns rows only for the quiz creator / owner (0015).
       supabase
         .from("quiz_answer_keys")
-        .select("question_id, correct_option_ids, explanation")
+        .select("question_id, correct_option_ids, correct_text_answers, explanation")
         .in("question_id", questionIds),
     ]);
 
@@ -79,7 +79,10 @@ export default async function AdminAttemptPage({
   const answerByQuestion = new Map(
     (answers ?? []).map((a) => [
       a.question_id as string,
-      a.selected_option_ids as string[],
+      {
+        selected: (a.selected_option_ids as string[]) ?? [],
+        text: (a.text_answer as string | null) ?? null,
+      },
     ]),
   );
 
@@ -87,11 +90,13 @@ export default async function AdminAttemptPage({
     const question = questionById.get(id);
     if (!question || question.archived_at) return [];
     const key = keyByQuestion.get(id);
+    const answer = answerByQuestion.get(id);
     return [
       {
         id,
         text: question.question_text as string,
         points: Number(question.points),
+        type: question.question_type as ReviewQuestion["type"],
         options: orderOptions(
           (options ?? [])
             .filter((option) => option.question_id === id)
@@ -102,8 +107,12 @@ export default async function AdminAttemptPage({
           attempt.option_order,
           id,
         ),
-        selected: answerByQuestion.get(id) ?? [],
-        correct: key ? ((key.correct_option_ids as string[]) ?? []) : null,
+        selected: answer?.selected ?? [],
+        submittedText: answer?.text ?? null,
+        correctOptionIds: key ? ((key.correct_option_ids as string[] | null) ?? null) : null,
+        correctTextAnswers: key
+          ? ((key.correct_text_answers as string[] | null) ?? null)
+          : null,
         explanation: key ? ((key.explanation as string | null) ?? null) : null,
       },
     ];

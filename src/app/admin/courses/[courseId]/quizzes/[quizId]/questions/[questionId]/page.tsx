@@ -11,6 +11,12 @@ import { Markdown } from "@/components/shared/markdown";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+const QUESTION_TYPE_LABELS: Record<string, string> = {
+  single_choice: "Single choice",
+  multiple_choice: "Multiple choice",
+  short_answer: "Short answer",
+};
+
 export default async function AdminQuestionPage({
   params,
 }: {
@@ -46,7 +52,7 @@ export default async function AdminQuestionPage({
       .order("position", { ascending: true }),
     supabase
       .from("quiz_answer_keys")
-      .select("correct_option_ids, explanation")
+      .select("correct_option_ids, correct_text_answers, explanation")
       .eq("question_id", question.id)
       .maybeSingle(),
   ]);
@@ -60,6 +66,7 @@ export default async function AdminQuestionPage({
     text: option.option_text as string,
     correct: correct.has(option.id as string),
   }));
+  const acceptableAnswers = (answerKey?.correct_text_answers as string[] | null) ?? [];
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 p-8">
@@ -101,6 +108,7 @@ export default async function AdminQuestionPage({
                   points: Number(question.points),
                   explanation: (answerKey?.explanation as string | null) ?? null,
                   options: optionList,
+                  acceptableAnswers,
                 }}
               />
             </CardContent>
@@ -110,24 +118,32 @@ export default async function AdminQuestionPage({
         <Card>
           <CardHeader>
             <CardTitle className="text-base">
-              {question.question_type === "single_choice"
-                ? "Single choice"
-                : "Multiple choice"}{" "}
+              {QUESTION_TYPE_LABELS[question.question_type] ?? question.question_type}{" "}
               · {Number(question.points)} pt
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <Markdown content={question.question_text} />
-            <ul className="flex flex-col gap-1 text-sm">
-              {optionList.map((option) => (
-                <li key={option.id}>
-                  {option.text}
-                  {option.correct ? (
-                    <span className="ml-2 text-green-700">(correct)</span>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
+            {question.question_type === "short_answer" ? (
+              <ul className="flex flex-col gap-1 text-sm">
+                {acceptableAnswers.map((answer) => (
+                  <li key={answer} className="text-green-700">
+                    {answer}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <ul className="flex flex-col gap-1 text-sm">
+                {optionList.map((option) => (
+                  <li key={option.id}>
+                    {option.text}
+                    {option.correct ? (
+                      <span className="ml-2 text-green-700">(correct)</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
             {!answerKey ? (
               <p className="text-muted-foreground text-xs">
                 The answer key is visible only to this quiz&apos;s creator and the

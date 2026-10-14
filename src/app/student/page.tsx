@@ -16,6 +16,9 @@ export default async function StudentPage() {
       <Button asChild className="self-start">
         <Link href="/student/courses">Browse courses</Link>
       </Button>
+      <Button asChild variant="outline" className="self-start">
+        <Link href="/student/settings">Settings</Link>
+      </Button>
       <form action={signOut}>
         <Button type="submit" variant="outline">
           Sign out

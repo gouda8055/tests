@@ -38,6 +38,15 @@ const quizFields = z.object({
   randomizeQuestions: z.boolean(),
   randomizeOptions: z.boolean(),
   showAnswersAfterSubmit: z.boolean(),
+  // Blank means "use every question" — same sentinel-via-empty-string
+  // pattern as optionalText above, just for a number instead of text.
+  poolSize: z
+    .union([
+      z.coerce.number().int().positive("Pool size must be at least 1."),
+      z.literal(""),
+    ])
+    .optional()
+    .transform((value) => (value === "" || value === undefined ? undefined : value)),
 });
 
 export const createQuizSchema = quizFields.extend({ courseId: z.string().uuid() });
@@ -51,7 +60,7 @@ export const setQuizStatusSchema = z.object({
 
 export const quizIdSchema = z.object({ quizId: z.string().uuid() });
 
-export const questionTypeSchema = z.enum(["single_choice", "multiple_choice"]);
+export const questionTypeSchema = z.enum(["single_choice", "multiple_choice", "short_answer"]);
 
 export const optionTextSchema = z
   .string()
@@ -111,12 +120,53 @@ export function checkCorrectCount(
   }
 }
 
+export const acceptableAnswerSchema = z
+  .string()
+  .trim()
+  .min(1, "An acceptable answer can't be empty.")
+  .max(1_000, "Acceptable answer is too long (1,000 characters max).");
+
+/**
+ * A short_answer question has acceptable text answers instead of
+ * options — this branches entirely away from checkCorrectCount rather
+ * than reusing it, since the two shapes share nothing (no option
+ * count/correct-count rules apply to text answers).
+ */
+function checkQuestionShape(
+  questionType: z.infer<typeof questionTypeSchema>,
+  options: { correct: boolean }[],
+  acceptableAnswers: string[],
+  ctx: z.RefinementCtx,
+) {
+  if (questionType === "short_answer") {
+    if (acceptableAnswers.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Add at least one acceptable answer.",
+        path: ["acceptableAnswers"],
+      });
+    }
+    if (acceptableAnswers.length > 20) {
+      ctx.addIssue({
+        code: "custom",
+        message: "At most 20 acceptable answers.",
+        path: ["acceptableAnswers"],
+      });
+    }
+    return;
+  }
+  checkCorrectCount(questionType, options, ctx);
+}
+
 export const createQuestionSchema = questionFields
   .extend({
     quizId: z.string().uuid(),
     options: z.array(z.object({ text: optionTextSchema, correct: z.boolean() })),
+    acceptableAnswers: z.array(acceptableAnswerSchema),
   })
-  .superRefine((value, ctx) => checkCorrectCount(value.questionType, value.options, ctx));
+  .superRefine((value, ctx) =>
+    checkQuestionShape(value.questionType, value.options, value.acceptableAnswers, ctx),
+  );
 
 export const updateQuestionSchema = questionFields
   .extend({
@@ -125,11 +175,13 @@ export const updateQuestionSchema = questionFields
       z.object({ id: z.string().uuid(), text: optionTextSchema, correct: z.boolean() }),
     ),
     newOptions: z.array(z.object({ text: optionTextSchema, correct: z.boolean() })),
+    acceptableAnswers: z.array(acceptableAnswerSchema),
   })
   .superRefine((value, ctx) =>
-    checkCorrectCount(
+    checkQuestionShape(
       value.questionType,
       [...value.existingOptions, ...value.newOptions],
+      value.acceptableAnswers,
       ctx,
     ),
   );
@@ -141,10 +193,20 @@ export const startAttemptSchema = z.object({ quizId: z.string().uuid() });
 export const saveAnswerSchema = z.object({
   attemptId: z.string().uuid(),
   questionId: z.string().uuid(),
+  // Exactly one of these two is expected, per the question's own
+  // question_type (the DB read in saveAnswer() is the source of truth for
+  // which) — both are optional here since this schema can't see that type
+  // itself.
   selectedOptionIds: z
     .array(z.string().uuid())
     .max(10)
-    .refine((ids) => new Set(ids).size === ids.length, "Duplicate option IDs."),
+    .refine((ids) => new Set(ids).size === ids.length, "Duplicate option IDs.")
+    .optional(),
+  textAnswer: z
+    .string()
+    .trim()
+    .max(2_000, "Answer is too long (2,000 characters max).")
+    .optional(),
 });
 
 export const submitAttemptSchema = z.object({ attemptId: z.string().uuid() });

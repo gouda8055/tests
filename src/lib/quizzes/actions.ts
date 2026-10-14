@@ -63,7 +63,7 @@ async function loadManageableQuestion(
 ) {
   const { data: question } = await supabase
     .from("quiz_questions")
-    .select("id, quiz_id, quizzes(course_id, created_by)")
+    .select("id, quiz_id, question_type, quizzes(course_id, created_by)")
     .eq("id", questionId)
     .maybeSingle();
   if (!question) return { ok: false, error: "Question not found." } as const;
@@ -80,6 +80,11 @@ async function loadManageableQuestion(
       id: question.id as string,
       quizId: question.quiz_id as string,
       courseId: parent.course_id,
+      // The authoritative type for branching updateQuestion()'s write
+      // path — never trust the client-submitted questionType for this,
+      // since the Type field is locked in the UI after creation but a
+      // tampered request could still claim otherwise.
+      questionType: question.question_type as string,
     },
   } as const;
 }
@@ -95,6 +100,7 @@ function quizInput(formData: FormData) {
     randomizeQuestions: formCheckbox(formData, "randomizeQuestions"),
     randomizeOptions: formCheckbox(formData, "randomizeOptions"),
     showAnswersAfterSubmit: formCheckbox(formData, "showAnswersAfterSubmit"),
+    poolSize: formField(formData, "poolSize"),
   };
 }
 
@@ -159,6 +165,7 @@ export async function createQuiz(
       randomize_questions: parsed.data.randomizeQuestions,
       randomize_options: parsed.data.randomizeOptions,
       show_answers_after_submit: parsed.data.showAnswersAfterSubmit,
+      pool_size: parsed.data.poolSize ?? null,
     })
     .select("id")
     .single();
@@ -218,6 +225,7 @@ export async function updateQuiz(
       randomize_questions: parsed.data.randomizeQuestions,
       randomize_options: parsed.data.randomizeOptions,
       show_answers_after_submit: parsed.data.showAnswersAfterSubmit,
+      pool_size: parsed.data.poolSize ?? null,
     })
     .eq("id", parsed.data.quizId)
     .select("id")
@@ -340,6 +348,10 @@ export async function createQuestion(
   const options = formFields(formData, "optionText")
     .map((text, slot) => ({ text: text.trim(), correct: correctSlots.has(String(slot)) }))
     .filter((option) => option.text !== "");
+  const acceptableAnswers = (formField(formData, "acceptableAnswersText") ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
 
   const parsed = createQuestionSchema.safeParse({
     quizId: formField(formData, "quizId"),
@@ -348,6 +360,7 @@ export async function createQuestion(
     points: formField(formData, "points"),
     explanation: formField(formData, "explanation"),
     options,
+    acceptableAnswers,
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
@@ -381,33 +394,47 @@ export async function createQuestion(
 
   if (questionError || !question) return { error: "Could not create question." };
 
-  const { data: insertedOptions, error: optionsError } = await supabase
-    .from("quiz_question_options")
-    .insert(
-      parsed.data.options.map((option, position) => ({
+  // short_answer has no options at all — the answer key is text-shaped
+  // instead (0025_short_answer_questions.sql's exactly-one-shape check).
+  let keyError: { message: string } | null;
+  if (parsed.data.questionType === "short_answer") {
+    keyError = (
+      await supabase.from("quiz_answer_keys").insert({
         institute_id: actor.instituteId,
         question_id: question.id,
-        position,
-        option_text: option.text,
-      })),
-    )
-    .select("id, position");
+        correct_text_answers: parsed.data.acceptableAnswers,
+        explanation: parsed.data.explanation ?? null,
+      })
+    ).error;
+  } else {
+    const { data: insertedOptions, error: optionsError } = await supabase
+      .from("quiz_question_options")
+      .insert(
+        parsed.data.options.map((option, position) => ({
+          institute_id: actor.instituteId,
+          question_id: question.id,
+          position,
+          option_text: option.text,
+        })),
+      )
+      .select("id, position");
 
-  const correctOptionIds = (insertedOptions ?? [])
-    .filter((row) => parsed.data.options[row.position as number]?.correct)
-    .map((row) => row.id as string);
+    const correctOptionIds = (insertedOptions ?? [])
+      .filter((row) => parsed.data.options[row.position as number]?.correct)
+      .map((row) => row.id as string);
 
-  const keyError =
-    optionsError || !insertedOptions || correctOptionIds.length === 0
-      ? true
-      : (
-          await supabase.from("quiz_answer_keys").insert({
-            institute_id: actor.instituteId,
-            question_id: question.id,
-            correct_option_ids: correctOptionIds,
-            explanation: parsed.data.explanation ?? null,
-          })
-        ).error;
+    keyError =
+      optionsError || !insertedOptions || correctOptionIds.length === 0
+        ? { message: optionsError?.message ?? "no options inserted" }
+        : (
+            await supabase.from("quiz_answer_keys").insert({
+              institute_id: actor.instituteId,
+              question_id: question.id,
+              correct_option_ids: correctOptionIds,
+              explanation: parsed.data.explanation ?? null,
+            })
+          ).error;
+  }
 
   if (keyError) {
     await supabase
@@ -453,10 +480,18 @@ export async function updateQuestion(
   if (existingIds.length !== existingTexts.length) return { error: "Invalid request." };
   const correctExisting = new Set(formFields(formData, "correctExisting"));
   const correctNew = new Set(formFields(formData, "correctNew"));
+  const acceptableAnswers = (formField(formData, "acceptableAnswersText") ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
 
   const parsed = updateQuestionSchema.safeParse({
     questionId: formField(formData, "questionId"),
     questionText: formField(formData, "questionText"),
+    // Not trusted for the actual write — see loadManageableQuestion's
+    // questionType, the authoritative value used below. Still needed here
+    // so Zod validates against the right shape (options vs. acceptable
+    // answers) for a tampered request too, rather than skipping both.
     questionType: formField(formData, "questionType"),
     points: formField(formData, "points"),
     explanation: formField(formData, "explanation"),
@@ -468,6 +503,7 @@ export async function updateQuestion(
     newOptions: formFields(formData, "newOptionText")
       .map((text, slot) => ({ text: text.trim(), correct: correctNew.has(String(slot)) }))
       .filter((option) => option.text !== ""),
+    acceptableAnswers,
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
@@ -479,88 +515,106 @@ export async function updateQuestion(
   if (!loaded.ok) return { error: loaded.error };
   const { question } = loaded;
 
-  const { data: storedOptions } = await supabase
-    .from("quiz_question_options")
-    .select("id, position, option_text")
-    .eq("question_id", question.id);
-  const stored = new Map(
-    (storedOptions ?? []).map((row) => [row.id as string, row] as const),
-  );
-
-  // Every stored option must be submitted (none can be dropped) and every
-  // submitted id must belong to this question.
-  if (
-    parsed.data.existingOptions.length !== stored.size ||
-    parsed.data.existingOptions.some((option) => !stored.has(option.id))
-  ) {
-    return { error: "Options changed since this page loaded. Reload and try again." };
-  }
-
   const { error: questionError } = await supabase
     .from("quiz_questions")
     .update({
       question_text: parsed.data.questionText,
-      question_type: parsed.data.questionType,
       points: parsed.data.points,
+      // question_type is deliberately never written here — it's locked at
+      // creation (the form disables changing it once options or a text
+      // answer key exist in one particular shape; see question-form.tsx).
     })
     .eq("id", question.id);
   if (questionError) return { error: "Could not update question." };
 
-  for (const option of parsed.data.existingOptions) {
-    if (stored.get(option.id)?.option_text === option.text) continue;
-    const { error } = await supabase
+  // Every question is created with its matching answer-key row atomically
+  // (createQuestion/importQuestions both archive the question if that
+  // insert fails), so this row should always exist — a missing one here
+  // means something is already corrupted, surfaced as an error rather
+  // than silently no-op'ing or quietly re-inserting over unknown state.
+  let keyError: { message: string } | null;
+  let keyFound: unknown;
+
+  if (question.questionType === "short_answer") {
+    if (parsed.data.acceptableAnswers.length === 0) {
+      return { error: "Add at least one acceptable answer." };
+    }
+    ({ error: keyError, data: keyFound } = await supabase
+      .from("quiz_answer_keys")
+      .update({
+        correct_text_answers: parsed.data.acceptableAnswers,
+        explanation: parsed.data.explanation ?? null,
+      })
+      .eq("question_id", question.id)
+      .select("id")
+      .maybeSingle());
+  } else {
+    const { data: storedOptions } = await supabase
       .from("quiz_question_options")
-      .update({ option_text: option.text })
-      .eq("id", option.id)
+      .select("id, position, option_text")
       .eq("question_id", question.id);
-    if (error) return { error: "Could not update an option." };
-  }
+    const stored = new Map(
+      (storedOptions ?? []).map((row) => [row.id as string, row] as const),
+    );
 
-  const correctOptionIds = parsed.data.existingOptions
-    .filter((option) => option.correct)
-    .map((option) => option.id);
+    // Every stored option must be submitted (none can be dropped) and
+    // every submitted id must belong to this question.
+    if (
+      parsed.data.existingOptions.length !== stored.size ||
+      parsed.data.existingOptions.some((option) => !stored.has(option.id))
+    ) {
+      return { error: "Options changed since this page loaded. Reload and try again." };
+    }
 
-  if (parsed.data.newOptions.length > 0) {
-    const nextPosition =
-      Math.max(-1, ...[...stored.values()].map((row) => row.position as number)) + 1;
-    const { data: inserted, error } = await supabase
-      .from("quiz_question_options")
-      .insert(
-        parsed.data.newOptions.map((option, index) => ({
-          institute_id: actor.instituteId,
-          question_id: question.id,
-          position: nextPosition + index,
-          option_text: option.text,
-        })),
-      )
-      .select("id, position");
-    if (error || !inserted) return { error: "Could not add the new options." };
-    for (const row of inserted) {
-      if (parsed.data.newOptions[(row.position as number) - nextPosition]?.correct) {
-        correctOptionIds.push(row.id as string);
+    for (const option of parsed.data.existingOptions) {
+      if (stored.get(option.id)?.option_text === option.text) continue;
+      const { error } = await supabase
+        .from("quiz_question_options")
+        .update({ option_text: option.text })
+        .eq("id", option.id)
+        .eq("question_id", question.id);
+      if (error) return { error: "Could not update an option." };
+    }
+
+    const correctOptionIds = parsed.data.existingOptions
+      .filter((option) => option.correct)
+      .map((option) => option.id);
+
+    if (parsed.data.newOptions.length > 0) {
+      const nextPosition =
+        Math.max(-1, ...[...stored.values()].map((row) => row.position as number)) + 1;
+      const { data: inserted, error } = await supabase
+        .from("quiz_question_options")
+        .insert(
+          parsed.data.newOptions.map((option, index) => ({
+            institute_id: actor.instituteId,
+            question_id: question.id,
+            position: nextPosition + index,
+            option_text: option.text,
+          })),
+        )
+        .select("id, position");
+      if (error || !inserted) return { error: "Could not add the new options." };
+      for (const row of inserted) {
+        if (parsed.data.newOptions[(row.position as number) - nextPosition]?.correct) {
+          correctOptionIds.push(row.id as string);
+        }
       }
     }
+
+    ({ error: keyError, data: keyFound } = await supabase
+      .from("quiz_answer_keys")
+      .update({
+        correct_option_ids: correctOptionIds,
+        explanation: parsed.data.explanation ?? null,
+      })
+      .eq("question_id", question.id)
+      .select("id")
+      .maybeSingle());
   }
 
-  const keyFields = {
-    correct_option_ids: correctOptionIds,
-    explanation: parsed.data.explanation ?? null,
-  };
-  const { data: updatedKey, error: keyError } = await supabase
-    .from("quiz_answer_keys")
-    .update(keyFields)
-    .eq("question_id", question.id)
-    .select("id")
-    .maybeSingle();
   if (keyError) return { error: "Could not update the answer key." };
-  if (!updatedKey) {
-    const { error } = await supabase.from("quiz_answer_keys").insert({
-      institute_id: actor.instituteId,
-      question_id: question.id,
-      ...keyFields,
-    });
-    if (error) return { error: "Could not save the answer key." };
-  }
+  if (!keyFound) return { error: "Could not find this question's answer key." };
 
   await logAudit({
     instituteId: actor.instituteId,

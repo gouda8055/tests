@@ -4,7 +4,7 @@ import { z } from "zod";
 // plus a mix of letters and digits, but not mandatory special characters.
 // SECURITY.md §3: "Require strong passwords." Supabase Auth's own default
 // minimum is 6 — this is deliberately stronger.
-const passwordSchema = z
+export const passwordSchema = z
   .string()
   .min(8, "Password must be at least 8 characters.")
   .max(72, "Password must be at most 72 characters.")

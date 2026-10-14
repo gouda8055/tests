@@ -1,14 +1,16 @@
 # Handoff
 
 Everything below reflects the state of `claude/security-multi-tenant-lms-e5198b`
-after Stage 4. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
+after Stage 5. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
 lessons, enrollment, video, quizzes/exams), Stage 3 (scheduled quiz-attempt
-auto-expiry), and Stage 4 (unenroll, bulk question import, gradebook
-export) are all built, committed, and pushed — to this branch directly,
-which is this repo's default branch (there's no separate `main`;
+auto-expiry), Stage 4 (unenroll, bulk question import, gradebook export),
+and Stage 5 (question pools, short-answer questions, the attempt-limit
+race fix, quiz analytics, an audit log viewer, account settings, and
+course search) are all built, committed, and pushed — to this branch
+directly, which is this repo's default branch (there's no separate `main`;
 everything lands here straight, no PR workflow). `README.md` has setup
 steps, `SECURITY.md` is the mandatory rulebook. This file is the map, in
-the order the four stages happened.
+the order the five stages happened.
 
 ## Access you'll need
 
@@ -16,7 +18,7 @@ the order the four stages happened.
   (the default branch — push here directly).
 - **Supabase project**: `lms-exam-saas`, ref `uprhdpwfztdeifhktwww`, region
   `ap-south-1`. Separate from any other project on the account — see
-  SECURITY.md §2. Migrations `0001`–`0021` are applied.
+  SECURITY.md §2. Migrations `0001`–`0025` are applied.
 - **`.env.local`** (gitignored, create it yourself): real
   `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` are in the
   README's Getting Started section. **`SUPABASE_SERVICE_ROLE_KEY` is not in
@@ -176,8 +178,9 @@ independent of this.
    reproduces in your environment or was specific to the sandbox.
 4. Set a real `CRON_SECRET` and a cron schedule for your actual Vercel plan
    — see the Stage 3 section below.
-5. Decide on a Stage 5 scope — there's no brief for it yet now that
-   unenroll, bulk import, and gradebook export (Stage 4) are all done.
+5. Decide on a Stage 6 scope — there's no brief for it yet. The three
+   themes deferred when Stage 5 was scoped: paid enrollment (Razorpay),
+   notifications, and the small ops loose ends in this list.
 
 ## Stage 3 — scheduled quiz-attempt auto-expiry
 
@@ -335,17 +338,138 @@ reflects in a staff-facing list before that happens anyway.
   correctly, not a bug; if you hit it while developing against this spec,
   wait a few minutes rather than suspecting the new code.
 
+## Stage 5 — question pools, short answer, the attempt-limit race fix, analytics, audit log, settings, search
+
+User picked three of six proposed themes to bundle: exam engine depth,
+instructor-facing tools, student-facing tools (paid enrollment,
+notifications, and small ops loose ends were explicitly deferred). Two
+scope cuts made along the way, in case you wonder why they're missing:
+**no "matching" question type** (real new UI + a different answer-key
+shape for uncertain payoff) and **no dedicated "true/false" feature**
+(already works today — a `single_choice` question with exactly two
+options IS a true/false question). Certificates of completion were also
+proposed but deferred: they need a new "passing score" concept no quiz
+has today, a PDF-generation dependency, and a template design — the
+least-defined item on the list.
+
+### What's built
+
+- **Fixed the `max_attempts` concurrency race**
+  (`supabase/migrations/0022_fix_attempt_limit_race.sql`) — the gap
+  documented since Stage 2: two simultaneous `startAttempt` requests could
+  both pass `quiz_attempts_insert_self`'s attempt-count check before
+  either committed, since that check is `STABLE` and evaluated against
+  the single INSERT statement's snapshot (blocking alone doesn't help
+  under READ COMMITTED — a blocked statement resumes with the *same*
+  snapshot). Fixed with a `BEFORE INSERT FOR EACH ROW` trigger that takes
+  a `pg_advisory_xact_lock` scoped to the (quiz, student) pair, then runs
+  its own fresh count query — plpgsql function bodies get a fresh READ
+  COMMITTED snapshot per internal query, unlike the outer statement, so
+  the second transaction's count (taken after the lock the first one just
+  released) correctly sees the first's committed row. No `SECURITY
+  DEFINER` needed. Verified with a real concurrency test (two inserts
+  fired via `Promise.all`, not sequentially) in
+  `tests/rls/quiz-attempt-limit-race.test.ts`. One real advisor finding
+  caught and fixed along the way: the trigger function was missing `set
+  search_path = public` (every other function in this schema pins it) —
+  `0023_fix_enforce_attempt_limit_search_path.sql`.
+- **Question pools ("pull N of M")** — a nullable `quizzes.pool_size`
+  (`0024_quiz_pool_size.sql`). When set and less than the quiz's active
+  question count, `startAttempt` (`src/lib/quizzes/attempt-actions.ts`)
+  samples that many random questions before persisting `question_order` —
+  everything downstream (grading, the attempt UI, result review) already
+  operates purely off that persisted list, so nothing else needed to
+  change for a smaller sampled list to just mean a smaller `max_score`.
+  Selection is always random; presentation order still respects
+  `randomize_questions` independently (off means the sampled subset shows
+  in its original authored order, not further shuffled).
+- **Short-answer questions** (`0025_short_answer_questions.sql`) —
+  exact-match, case/whitespace-insensitive text grading against one or
+  more acceptable answers. `quiz_answer_keys.correct_option_ids` is now
+  nullable with a new nullable `correct_text_answers text[]`, exactly one
+  populated (DB check constraint, same invariant-via-constraint precedent
+  as lessons' `(video_provider is null) = (video_id is null)`);
+  `quiz_attempt_answers` gained a nullable `text_answer`. The grading
+  logic itself (`isQuestionCorrect`, `sameSet`) lives in the new
+  **`src/lib/quizzes/correctness.ts`** — pulled out of `grading.ts`
+  specifically because `grading.ts` is `server-only` (importing it
+  outside a real Next.js request/render throws), so this pure piece
+  wouldn't have been unit-testable otherwise; `grading.ts` re-exports both
+  names so no existing import site needed to change. A question's type is
+  **locked after creation** — switching a choice question to/from
+  short_answer would orphan its options or its answer key's shape, so the
+  type Select in `question-form.tsx` is only interactive when creating;
+  editing shows it as a fixed label plus a hidden input, and
+  `updateQuestion` never writes `question_type` at all, branching instead
+  on the DB's own stored type (never the client-submitted one — a
+  tampered request can't flip which validation path runs). Bulk CSV
+  import stays choice-only this stage; short-answer rows aren't a
+  supported import format yet.
+- **Quiz analytics**
+  (`.../quizzes/[quizId]/analytics/page.tsx`) — attempt counts by status,
+  average score (as a *percentage*, not raw score, since pool_size means
+  `max_score` isn't constant across a quiz's attempts anymore), a
+  bucketed score-distribution bar chart (plain Tailwind divs, no charting
+  dependency), and per-question correct-rate — computed by checking each
+  question only against the attempts whose persisted `question_order`
+  actually included it, not every attempt, since pools mean not every
+  attempt sees every question.
+- **Audit log viewer** (`/admin/audit-log`, `institute_owner` only) —
+  needed no new RLS at all;
+  `audit_logs_select_super_admin_or_owner` (0005) already granted this
+  read, nothing had ever used it. Actor names resolved via a new, broader
+  sibling of `getStudentNames`:
+  **`src/lib/audit/names.ts`**'s `getProfileNames` (no role filter, since
+  an audit log's actor can be any role, unlike a roster).
+- **Account settings** (`/student/settings`, `/admin/settings`) — change
+  display name (already allowed by `profiles_update_self`, 0005) and
+  change password (`supabase.auth.updateUser`, no extra Supabase config).
+  New `src/lib/account/actions.ts`, same Zod/`requireRole`/`logAudit`/
+  `refresh()` convention as every other action in this codebase.
+- **Course search** — both course list pages got a small client
+  component wrapping the already-fetched list with a plain in-browser
+  title filter (`src/components/courses/course-list.tsx`,
+  `student-course-grid.tsx`). No new server round-trip, no URL state —
+  neither list has ever needed pagination. The server page still does the
+  one data fetch exactly as before and hands plain, already-formatted
+  data to the client component (timestamps are pre-formatted server-side
+  per `format.ts`'s existing "server-rendered timestamp" convention,
+  never passed as raw values for a client component to reformat).
+
+### Verified
+
+- Live tests: the concurrency race test above, plus
+  `tests/rls/quiz-short-answer.test.ts` (answer-key secrecy for a
+  short_answer question, the exactly-one-shape check constraint rejecting
+  both-set and neither-set rows, a student successfully saving a
+  `text_answer` within the deadline, a late one still rejected). 15 new
+  unit tests for the extracted `src/lib/quizzes/correctness.ts`
+  (`tests/unit/correctness.test.ts`) — case/whitespace-insensitive
+  matching, wrong-answer scoring, exact-set-match for both choice types —
+  the same reasoning as Stage 4's `csv.ts`/`csv-import.ts` split: pull
+  pure logic out of a `server-only` module so it's actually unit-testable.
+- `e2e/stage5.spec.ts` (Playwright, real dev server, one long flow):
+  sets `pool_size = 2` on a 3-question quiz via the UI and confirms an
+  attempt shows exactly 2 questions; adds a short-answer question via the
+  UI and confirms it grades correctly end to end; checks the analytics
+  page's average-score and the audit log's `quiz.attempt.submitted`
+  entry; updates a profile name and password through the settings pages
+  and confirms the new password actually works by signing in again with
+  it; exercises course search on both the admin and student lists. Needed
+  `test.setTimeout(180_000)` — this single flow does far more sequential
+  navigation than any other spec, and the default 30s budget wasn't
+  enough on its own. Also hit (and fixed) a real test bug, not an app bug:
+  Playwright's `getByLabel` does substring matching by default, so
+  `getByLabel("New password")` also matched "Confirm new password" —
+  needed `{ exact: true }`.
+- 88 Vitest tests total, lint/typecheck/build clean, no new advisor
+  findings beyond the one `search_path` fix already folded into this
+  stage's own migrations.
+
 ## Known gaps (not failures — out of scope so far)
 
-Everything from Stage 1's list that's still open, plus:
-
-- A real-time concurrent-`startAttempt` race on `max_attempts`: two
-  simultaneous requests can both pass the count check before either
-  commits, letting a student get one extra attempt. Documented in
-  `0019_lock_down_attempt_writes.sql`'s closing comment — fixing it needs
-  either serializable isolation or a server-assigned attempt sequence
-  number, deferred as low-severity (fairness, not a score/data-integrity
-  issue).
+Everything from Stage 1's list that's still open. The `max_attempts`
+concurrency race from Stage 2's list is now fixed (see Stage 5 above).
 
 ## Architecture decisions worth knowing before you extend this
 
