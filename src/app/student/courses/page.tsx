@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { requireTenantRole } from "@/lib/auth/guard";
+import { formatPrice } from "@/lib/format";
 import { createServerClient } from "@/lib/supabase/server";
 import { StudentCourseGrid } from "@/components/courses/student-course-grid";
 
@@ -13,7 +14,7 @@ export default async function StudentCoursesPage() {
   const [{ data: courses }, { data: enrollments }] = await Promise.all([
     supabase
       .from("courses")
-      .select("id, title, description")
+      .select("id, title, description, price_paise, currency")
       .order("created_at", { ascending: false }),
     supabase.from("enrollments").select("course_id").eq("student_id", profile.id),
   ]);
@@ -24,6 +25,10 @@ export default async function StudentCoursesPage() {
     title: course.title as string,
     description: course.description as string | null,
     enrolled: enrolled.has(course.id as string),
+    priceLabel: formatPrice(
+      course.price_paise as number | null,
+      course.currency as string,
+    ),
   }));
 
   return (

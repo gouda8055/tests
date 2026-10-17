@@ -19,7 +19,12 @@ export function CourseForm({
   course,
 }: {
   action: CourseFormAction;
-  course?: { id: string; title: string; description: string | null };
+  course?: {
+    id: string;
+    title: string;
+    description: string | null;
+    pricePaise: number | null;
+  };
 }) {
   const [state, formAction, pending] = useActionState(action, undefined);
 
@@ -46,6 +51,22 @@ export function CourseForm({
           maxLength={5000}
           defaultValue={course?.description ?? ""}
         />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="coursePrice">Price (₹, optional)</Label>
+        <Input
+          id="coursePrice"
+          name="priceRupees"
+          type="number"
+          min={0}
+          step="0.01"
+          defaultValue={course?.pricePaise ? course.pricePaise / 100 : ""}
+          placeholder="Free"
+        />
+        <p className="text-muted-foreground text-xs">
+          Leave blank for a free course. Students pay through Razorpay
+          checkout before enrollment is granted.
+        </p>
       </div>
       {state && "error" in state ? (
         <p className="text-destructive text-sm">{state.error}</p>

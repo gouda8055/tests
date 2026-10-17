@@ -14,6 +14,18 @@ export function formatDuration(seconds: number): string {
   return `${minutes} min`;
 }
 
+/** `null`/`0` paise formats as "Free" rather than "₹0.00" — a course with
+ * no price set is free, not zero-priced. */
+export function formatPrice(pricePaise: number | null, currency = "INR"): string {
+  if (!pricePaise) return "Free";
+  const formatter = new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: pricePaise % 100 === 0 ? 0 : 2,
+  });
+  return formatter.format(pricePaise / 100);
+}
+
 export function formatScore(score: unknown, maxScore: unknown): string {
   if (
     score === null ||

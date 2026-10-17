@@ -36,6 +36,7 @@ export async function createCourse(
   const parsed = createCourseSchema.safeParse({
     title: formField(formData, "title"),
     description: formField(formData, "description"),
+    priceRupees: formField(formData, "priceRupees"),
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
@@ -50,6 +51,11 @@ export async function createCourse(
       created_by: actor.id,
       title: parsed.data.title,
       description: parsed.data.description ?? null,
+      // Rounded here, the one place a rupees->paise conversion happens.
+      price_paise:
+        parsed.data.priceRupees === undefined
+          ? null
+          : Math.round(parsed.data.priceRupees * 100),
     })
     .select("id")
     .single();
@@ -99,6 +105,7 @@ export async function updateCourse(
     courseId: formField(formData, "courseId"),
     title: formField(formData, "title"),
     description: formField(formData, "description"),
+    priceRupees: formField(formData, "priceRupees"),
   });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input." };
@@ -110,7 +117,14 @@ export async function updateCourse(
 
   const { data, error } = await supabase
     .from("courses")
-    .update({ title: parsed.data.title, description: parsed.data.description ?? null })
+    .update({
+      title: parsed.data.title,
+      description: parsed.data.description ?? null,
+      price_paise:
+        parsed.data.priceRupees === undefined
+          ? null
+          : Math.round(parsed.data.priceRupees * 100),
+    })
     .eq("id", parsed.data.courseId)
     .select("id")
     .maybeSingle();

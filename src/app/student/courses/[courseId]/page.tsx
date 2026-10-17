@@ -2,10 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { requireTenantRole } from "@/lib/auth/guard";
+import { isRazorpayConfigured } from "@/lib/env.server";
 import { unenrollFromCourse } from "@/lib/enrollment/actions";
-import { formatDuration } from "@/lib/format";
+import { formatDuration, formatPrice } from "@/lib/format";
 import { createServerClient } from "@/lib/supabase/server";
 import { EnrollForm } from "@/components/courses/enroll-form";
+import { CheckoutButton } from "@/components/payments/checkout-button";
 import { ConfirmActionDialog } from "@/components/shared/confirm-action-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -21,7 +23,7 @@ export default async function StudentCoursePage({
   const [{ data: course }, { data: enrollment }] = await Promise.all([
     supabase
       .from("courses")
-      .select("id, title, description")
+      .select("id, title, description, price_paise, currency")
       .eq("id", courseId)
       .maybeSingle(),
     supabase
@@ -86,9 +88,27 @@ export default async function StudentCoursePage({
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <p className="text-muted-foreground text-sm">
-              Lessons and quizzes unlock once you enroll.
+              Lessons and quizzes unlock once you enroll.{" "}
+              {course.price_paise ? (
+                <span className="font-medium">{formatPrice(course.price_paise, course.currency)}</span>
+              ) : null}
             </p>
-            <EnrollForm courseId={course.id} />
+            {course.price_paise ? (
+              isRazorpayConfigured ? (
+                <CheckoutButton
+                  courseId={course.id}
+                  pricePaise={course.price_paise}
+                  currency={course.currency}
+                  studentName={profile.fullName}
+                />
+              ) : (
+                <p className="text-muted-foreground text-sm">
+                  Payments aren&apos;t configured for this institute yet.
+                </p>
+              )
+            ) : (
+              <EnrollForm courseId={course.id} />
+            )}
           </CardContent>
         </Card>
       ) : (

@@ -12,6 +12,8 @@ export type StudentCourseListItem = {
   title: string;
   description: string | null;
   enrolled: boolean;
+  /** Pre-formatted server-side (e.g. "Free", "₹499") — see format.ts's formatPrice. */
+  priceLabel: string;
 };
 
 /** Client-side title/description filter — same reasoning as CourseList. */
@@ -52,6 +54,7 @@ export function StudentCourseGrid({ courses }: { courses: StudentCourseListItem[
                     <CardTitle>{course.title}</CardTitle>
                     {course.enrolled ? <Badge variant="success">enrolled</Badge> : null}
                   </div>
+                  <p className="text-muted-foreground text-xs">{course.priceLabel}</p>
                   {course.description ? (
                     <CardDescription className="line-clamp-3">
                       {course.description}

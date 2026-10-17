@@ -1,16 +1,17 @@
 # Handoff
 
 Everything below reflects the state of `claude/security-multi-tenant-lms-e5198b`
-after Stage 5. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
+after Stage 6. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
 lessons, enrollment, video, quizzes/exams), Stage 3 (scheduled quiz-attempt
 auto-expiry), Stage 4 (unenroll, bulk question import, gradebook export),
-and Stage 5 (question pools, short-answer questions, the attempt-limit
-race fix, quiz analytics, an audit log viewer, account settings, and
-course search) are all built, committed, and pushed — to this branch
-directly, which is this repo's default branch (there's no separate `main`;
-everything lands here straight, no PR workflow). `README.md` has setup
-steps, `SECURITY.md` is the mandatory rulebook. This file is the map, in
-the order the five stages happened.
+Stage 5 (question pools, short-answer questions, the attempt-limit race
+fix, quiz analytics, an audit log viewer, account settings, and course
+search), and Stage 6 (paid enrollment via Razorpay) are all built,
+committed, and pushed — to this branch directly, which is this repo's
+default branch (there's no separate `main`; everything lands here
+straight, no PR workflow). `README.md` has setup steps, `SECURITY.md` is
+the mandatory rulebook. This file is the map, in the order the six stages
+happened.
 
 ## Access you'll need
 
@@ -18,7 +19,7 @@ the order the five stages happened.
   (the default branch — push here directly).
 - **Supabase project**: `lms-exam-saas`, ref `uprhdpwfztdeifhktwww`, region
   `ap-south-1`. Separate from any other project on the account — see
-  SECURITY.md §2. Migrations `0001`–`0025` are applied.
+  SECURITY.md §2. Migrations `0001`–`0026` are applied.
 - **`.env.local`** (gitignored, create it yourself): real
   `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` are in the
   README's Getting Started section. **`SUPABASE_SERVICE_ROLE_KEY` is not in
@@ -37,6 +38,10 @@ the order the five stages happened.
   `.env.local` for local testing and in the deployment platform's env vars
   for production — see the Stage 3 section below for how this is verified
   without it ever being committed anywhere.
+- **Razorpay** (paid enrollment, Stage 6): no account exists yet. The three
+  `RAZORPAY_*` env vars in `.env.example` are optional — checkout degrades
+  to a clear "payments aren't configured" message until you add a real
+  (use test-mode keys first) account. See the Stage 6 section below.
 
 ## Stage 2 — courses, lessons, enrollment, video, quizzes/exams
 
@@ -178,9 +183,12 @@ independent of this.
    reproduces in your environment or was specific to the sandbox.
 4. Set a real `CRON_SECRET` and a cron schedule for your actual Vercel plan
    — see the Stage 3 section below.
-5. Decide on a Stage 6 scope — there's no brief for it yet. The three
-   themes deferred when Stage 5 was scoped: paid enrollment (Razorpay),
-   notifications, and the small ops loose ends in this list.
+5. Get a real (test-mode first) Razorpay account and set the three
+   `RAZORPAY_*` env vars — see the Stage 6 section below — once paid
+   enrollment actually needs to work end to end rather than stay dormant.
+6. Decide on a Stage 7 scope — there's no brief for it yet. Two themes
+   remain deferred: notifications, and the small ops loose ends in this
+   list.
 
 ## Stage 3 — scheduled quiz-attempt auto-expiry
 
@@ -466,10 +474,114 @@ least-defined item on the list.
   findings beyond the one `search_path` fix already folded into this
   stage's own migrations.
 
+## Stage 6 — paid enrollment (Razorpay)
+
+Closes the last deferred theme from Stage 5's scoping question (the other
+two — notifications and the small ops loose ends below — are still
+deferred). Followed SECURITY.md §7 to the letter rather than improvising,
+since this is the first feature touching real financial transactions,
+even in test mode.
+
+### What's built
+
+- **Course pricing** — `courses.price_paise` (nullable; null/0 stays free,
+  using the exact same self-enroll flow as before) plus `currency`
+  (`'INR'` default — single-currency system for now). A course-form.tsx
+  "Price (₹, optional)" field, converted to paise
+  (`Math.round(rupees * 100)`) in `courses/actions.ts` — the one rounding
+  point in the whole feature.
+- **`payments` table** (`0026_payments.sql`) — the immutable per-
+  transaction record SECURITY.md §7 requires. The load-bearing design
+  choice: **no update or delete policy exists for any authenticated
+  role, at all** — only the webhook's service-role client can ever
+  transition `status` from `created` to `captured`/`failed`. This is what
+  makes "grant access only from a verified webhook" a fact enforced by
+  Postgres, not just something the app happens to do. The insert policy
+  (student, `status='created'` only) re-verifies `amount_paise`/`currency`
+  against the course's *current* price via a subquery — "the database is
+  the last line of defense" holds here exactly like everywhere else in
+  this schema.
+- **`enrollments_insert_self` (0011) tightened**: self-insert now only
+  works when the course is free. A priced course's enrollment can only
+  come from the webhook's service-role write — closing what would
+  otherwise be a direct path around payment entirely.
+- **Order creation** (`src/lib/payments/actions.ts`'s `createCheckoutOrder`)
+  — a plain async function (not a `<form>` action, same convention as
+  `saveAnswer`), rate-limited, computes the amount **only** from the
+  course's own `price_paise`, creates a Razorpay order (new `razorpay`
+  npm dependency), inserts the matching `payments` row. Returns the order
+  details to the client to launch Razorpay's hosted Checkout — never a
+  redirect.
+- **Checkout UI** (`src/components/payments/checkout-button.tsx`) —
+  loads Razorpay's Checkout script on click, opens the modal. Razorpay's
+  own client-side success handler is treated as **cosmetic only**: it
+  switches to "confirming your enrollment…" and polls a thin
+  `getEnrollmentStatus` check for up to 20s rather than granting anything
+  itself — SECURITY.md §7's "never treat a client redirect as proof of
+  payment," actually enforced, not just documented.
+- **Webhook** (`src/app/api/webhooks/razorpay/route.ts`) — service-role
+  only, no user session (this is Razorpay's server calling us). Reads
+  the body via `request.text()` **before** any JSON parsing — signature
+  verification needs the exact raw bytes Razorpay signed, not a
+  reserialized object. Verifies `X-Razorpay-Signature` with Node's
+  built-in `crypto` (not the SDK's own helper — explicit and auditable,
+  matching this codebase's general preference, e.g. `csv.ts`'s
+  `stripFormulaPrefix`). Idempotent: a payment already marked `captured`
+  is a no-op, not a re-grant; a duplicate enrollment insert (unique-
+  violation) is treated as success, not an error.
+- **Dormant until configured** — same treatment Stage 2 gave Bunny
+  Stream: `isRazorpayConfigured` (`src/lib/env.server.ts`) gates both the
+  checkout button (shows "Payments aren't configured for this institute
+  yet." instead) and the webhook (returns 500 rather than running
+  unauthenticated).
+
+### Scope cut
+
+No payments-history/revenue UI this stage (an instructor-facing
+transactions view). The `payments` table exists for integrity and is
+directly queryable; a dedicated viewer is a reasonable follow-up once
+there's real transaction volume to look at, not before.
+
+### Verified
+
+- `tests/rls/payments.test.ts` (new, live): a student can still self-
+  enroll directly in a free course (regression against Stage 1-5
+  behavior); a student **cannot** self-insert an enrollment for a priced
+  course — and this is a genuine Postgres error (`42501`), not a silent
+  0-row result, because a failing `WITH CHECK` on INSERT is a hard
+  rejection (unlike UPDATE/DELETE, which filter silently) — worth
+  knowing if you write a similar insert-rejection test later; a student
+  can create a `payments` row with the correct amount but not a forged
+  one; no authenticated role can update a `payments` row's status at
+  all.
+- `tests/unit/payments-signature.test.ts` (new): the webhook's signature
+  verification (`src/lib/payments/signature.ts`, pulled out pure/
+  server-only-free the same way `csv.ts` and `correctness.ts` were) —
+  valid signature accepted, tampered body rejected, wrong secret
+  rejected, malformed header rejected without throwing.
+- **Not independently testable without a real Razorpay account**: actual
+  order creation against Razorpay's live API, and a real webhook
+  delivery. `e2e/stage6.spec.ts` verifies everything that *is*
+  testable in the dormant state instead: course pricing end to end
+  through the UI, the "not configured" message appearing with no
+  checkout button for a priced course, the free-course self-enroll flow
+  staying completely unaffected, and the webhook refusing to run
+  (500) without configuration.
+- 99 Vitest tests total, lint/typecheck/build clean, no new advisor
+  findings.
+
 ## Known gaps (not failures — out of scope so far)
 
-Everything from Stage 1's list that's still open. The `max_attempts`
-concurrency race from Stage 2's list is now fixed (see Stage 5 above).
+Everything from Stage 1's list that's still open, plus:
+
+- **No real Razorpay account** — paid enrollment (Stage 6) is fully
+  wired but dormant; manual click-through through an actual checkout is
+  only possible once real (or test-mode) `RAZORPAY_*` keys exist.
+- Notifications and the handful of remaining small ops items are still
+  deferred from Stage 5/6's scoping — see "Immediate next steps" there.
+
+The `max_attempts` concurrency race from Stage 2's list is now fixed (see
+Stage 5 above).
 
 ## Architecture decisions worth knowing before you extend this
 

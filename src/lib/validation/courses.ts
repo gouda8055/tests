@@ -11,9 +11,21 @@ const optionalText = (max: number) =>
 
 export const contentStatusSchema = z.enum(["draft", "published"]);
 
+// Blank means free — same empty-string-sentinel pattern quiz-form.tsx's
+// poolSize already uses. Upper bound is an arbitrary sanity cap, not a
+// business rule.
+const priceRupeesSchema = z
+  .union([
+    z.coerce.number().positive("Price must be greater than 0.").max(1_000_000),
+    z.literal(""),
+  ])
+  .optional()
+  .transform((value) => (value === "" || value === undefined ? undefined : value));
+
 export const createCourseSchema = z.object({
   title: z.string().trim().min(1, "Title is required.").max(200),
   description: optionalText(5_000),
+  priceRupees: priceRupeesSchema,
 });
 
 export const updateCourseSchema = createCourseSchema.extend({

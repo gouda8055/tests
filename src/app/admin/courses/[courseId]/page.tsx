@@ -39,7 +39,7 @@ export default async function AdminCoursePage({
   const supabase = await createServerClient();
   const { data: course } = await supabase
     .from("courses")
-    .select("id, title, description, status, archived_at, created_by")
+    .select("id, title, description, status, archived_at, created_by, price_paise")
     .eq("id", courseId)
     .maybeSingle();
   if (!course) notFound();
@@ -264,6 +264,7 @@ export default async function AdminCoursePage({
                 id: course.id,
                 title: course.title,
                 description: course.description,
+                pricePaise: course.price_paise,
               }}
             />
           </TabsContent>

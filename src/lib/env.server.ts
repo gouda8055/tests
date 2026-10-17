@@ -29,6 +29,16 @@ const serverEnvSchema = z.object({
   // above. Vercel sends `Authorization: Bearer ${CRON_SECRET}` automatically
   // on scheduled invocations once this env var exists on the project.
   CRON_SECRET: optionalString,
+  // Razorpay (Stage 6 paid enrollment, SECURITY.md §7). All optional:
+  // checkout stays dormant, with a clear user-facing message, until an
+  // institute's Razorpay account is configured — same treatment as Bunny
+  // above. KEY_ID is safe to expose client-side per Razorpay's own docs,
+  // but it's still read here (not NEXT_PUBLIC_) and passed explicitly to
+  // the client component as a prop, so there's one source of truth
+  // alongside the two secrets it belongs with.
+  RAZORPAY_KEY_ID: optionalString,
+  RAZORPAY_KEY_SECRET: optionalString,
+  RAZORPAY_WEBHOOK_SECRET: optionalString,
 });
 
 function parseServerEnv() {
@@ -39,6 +49,9 @@ function parseServerEnv() {
     BUNNY_STREAM_TOKEN_AUTH_KEY: process.env.BUNNY_STREAM_TOKEN_AUTH_KEY,
     BUNNY_STREAM_CDN_HOSTNAME: process.env.BUNNY_STREAM_CDN_HOSTNAME,
     CRON_SECRET: process.env.CRON_SECRET,
+    RAZORPAY_KEY_ID: process.env.RAZORPAY_KEY_ID,
+    RAZORPAY_KEY_SECRET: process.env.RAZORPAY_KEY_SECRET,
+    RAZORPAY_WEBHOOK_SECRET: process.env.RAZORPAY_WEBHOOK_SECRET,
   });
 
   if (!parsed.success) {
@@ -65,4 +78,11 @@ export const serverEnv = {
  */
 export const isBunnyConfigured = Boolean(
   serverEnv.BUNNY_STREAM_LIBRARY_ID && serverEnv.BUNNY_STREAM_TOKEN_AUTH_KEY,
+);
+
+/** Checkout and the webhook both stay dormant until all three are set. */
+export const isRazorpayConfigured = Boolean(
+  serverEnv.RAZORPAY_KEY_ID &&
+    serverEnv.RAZORPAY_KEY_SECRET &&
+    serverEnv.RAZORPAY_WEBHOOK_SECRET,
 );
