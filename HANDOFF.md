@@ -1,17 +1,17 @@
 # Handoff
 
 Everything below reflects the state of `claude/security-multi-tenant-lms-e5198b`
-after Stage 6. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
+after Stage 7. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
 lessons, enrollment, video, quizzes/exams), Stage 3 (scheduled quiz-attempt
 auto-expiry), Stage 4 (unenroll, bulk question import, gradebook export),
 Stage 5 (question pools, short-answer questions, the attempt-limit race
 fix, quiz analytics, an audit log viewer, account settings, and course
-search), and Stage 6 (paid enrollment via Razorpay) are all built,
-committed, and pushed — to this branch directly, which is this repo's
-default branch (there's no separate `main`; everything lands here
-straight, no PR workflow). `README.md` has setup steps, `SECURITY.md` is
-the mandatory rulebook. This file is the map, in the order the six stages
-happened.
+search), Stage 6 (paid enrollment via Razorpay), and Stage 7 (email
+notifications) are all built, committed, and pushed — to this branch
+directly, which is this repo's default branch (there's no separate
+`main`; everything lands here straight, no PR workflow). `README.md` has
+setup steps, `SECURITY.md` is the mandatory rulebook. This file is the
+map, in the order the seven stages happened.
 
 ## Access you'll need
 
@@ -42,6 +42,12 @@ happened.
   `RAZORPAY_*` env vars in `.env.example` are optional — checkout degrades
   to a clear "payments aren't configured" message until you add a real
   (use test-mode keys first) account. See the Stage 6 section below.
+- **Resend** (email notifications, Stage 7): no account exists yet. The
+  two `RESEND_API_KEY`/`EMAIL_FROM` env vars are optional — unlike Bunny/
+  Razorpay, nothing user-facing shows a "not configured" message; every
+  send just silently no-ops (logged) and the action it's attached to
+  (enroll/publish/submit) succeeds exactly the same either way. See the
+  Stage 7 section below.
 
 ## Stage 2 — courses, lessons, enrollment, video, quizzes/exams
 
@@ -186,9 +192,14 @@ independent of this.
 5. Get a real (test-mode first) Razorpay account and set the three
    `RAZORPAY_*` env vars — see the Stage 6 section below — once paid
    enrollment actually needs to work end to end rather than stay dormant.
-6. Decide on a Stage 7 scope — there's no brief for it yet. Two themes
-   remain deferred: notifications, and the small ops loose ends in this
-   list.
+6. Get a real Resend account and set `RESEND_API_KEY`/`EMAIL_FROM` — see
+   the Stage 7 section below — once notifications actually need to send
+   rather than stay a logged no-op.
+7. Decide on a Stage 8 scope — there's no brief for it yet. Only the
+   small ops loose ends remain deferred (leaked-password-protection
+   toggle, the `acme` test institute decision, real Bunny Stream
+   credentials) — everything else originally scoped across Stages 5-7
+   is done.
 
 ## Stage 3 — scheduled quiz-attempt auto-expiry
 
@@ -570,15 +581,110 @@ there's real transaction volume to look at, not before.
 - 99 Vitest tests total, lint/typecheck/build clean, no new advisor
   findings.
 
+## Stage 7 — email notifications
+
+Closes the last substantial deferred theme (small ops loose ends remain —
+see Known Gaps). No generic "notification system" — four event types,
+each wired into a trigger point that already existed.
+
+### What's built
+
+- **`src/lib/notifications/templates.ts`** — pure, no `server-only`/
+  provider-SDK dependency (same reasoning as `csv.ts`/`correctness.ts`/
+  `signature.ts`). One function per event: `enrollmentConfirmedEmail`,
+  `paymentReceiptEmail`, `quizPublishedEmail`, `attemptGradedEmail`.
+  Every interpolated value (course/quiz title) is user-authored content,
+  not system text, so it all goes through an `escapeHtml` helper first —
+  these are HTML emails, and an unescaped course title is as real an
+  injection surface as unescaped HTML anywhere else in this app.
+- **`src/lib/notifications/recipients.ts`** — `getUserEmails`, a narrow
+  service-role read of `auth.users`' email (confirmed via
+  `0002_profiles.sql`: `profiles` has no email column at all — this is
+  the only place one lives in this schema), same "narrow and justified"
+  precedent as `getStudentNames`/`getProfileNames`.
+- **`src/lib/notifications/resend.ts`** — the send wrapper. **The one
+  thing worth really understanding here**: unlike Bunny Stream/Razorpay,
+  where the whole *feature* stays visibly dormant until configured, a
+  missing or failing email send must never fail the action it's attached
+  to. Enrolling, publishing a quiz, and submitting an attempt are the
+  real operations; the email is purely an enhancement on top. `sendEmail`
+  never throws — a missing `RESEND_API_KEY`/`EMAIL_FROM` or a Resend
+  outage both degrade to a logged no-op.
+- **`src/lib/notifications/send.ts`** — four orchestration functions
+  (`notifyEnrollmentConfirmed`, `notifyPaymentCaptured`,
+  `notifyQuizPublished`, `notifyAttemptGraded`), each wrapping its own
+  body in try/catch too (the recipient lookup is a DB call that
+  *could* throw, even though `sendEmail` itself can't) — so every
+  trigger site below gained exactly one line, never a new failure mode.
+- **Trigger points**, each reusing an idempotency guard that already
+  existed rather than adding new deduplication logic:
+  - `enrollInCourse` (`src/lib/enrollment/actions.ts`) — fires once per
+    successful insert.
+  - The Razorpay webhook's `handleCaptured`
+    (`src/app/api/webhooks/razorpay/route.ts`) — fires right after the
+    guarded `status = 'created' → 'captured'` update, which was already
+    the idempotency boundary a duplicate webhook delivery hits first.
+  - `setQuizStatus` (`src/lib/quizzes/actions.ts`) — only on the
+    `'published'` transition; loops over the course's enrolled students
+    (no queue/batching this stage — fine at this app's scale).
+  - `finalizeIfExpired` (`src/lib/quizzes/grading.ts`) — only when its
+    own `finalized` flag is `true`, the same flag that already gated its
+    `logAudit` call.
+
+### Scope cuts
+
+- **No deadline reminders.** There's no "quiz closes on this date"
+  concept anywhere in the schema (a quiz has a per-attempt
+  `duration_seconds` once started, not an assignment due date) — this
+  would mean inventing that concept plus a second scheduled job, not
+  just wiring an email into an existing moment. Deferred until there's
+  an actual due-date feature to hang it on.
+- **No per-user notification preferences** — all four events send
+  unconditionally once configured.
+- **Single platform-wide sender address** — no per-institute custom
+  sending domain.
+
+### Verified
+
+- `tests/unit/notification-templates.test.ts` (new): each template's
+  subject/body contains what it should; `escapeHtml` escapes a
+  deliberately hostile course/quiz title (`<img src=x onerror=...>`,
+  quotes, apostrophes).
+- `e2e/stage7.spec.ts` (new, real dev server): with no `RESEND_API_KEY`
+  configured — today's actual state — confirms free enrollment, quiz
+  publish, and quiz submission/grading all still succeed exactly as
+  before Stage 7. The dev server's own logs during this run are the
+  clearest proof: `Email not sent (Resend not configured): "You're
+  enrolled in Stage 7 Course"...` and the same for the graded-attempt
+  email, both logged *while the triggering action completed
+  successfully* — the no-op path firing without touching the real
+  operation, exactly as designed.
+- **Not independently testable without a real Resend account**: an
+  actual email being delivered. The fourth trigger
+  (`notifyPaymentCaptured`) specifically inherits Razorpay's own
+  dormant-webhook precedent from Stage 6 (no real Razorpay account
+  exists either, so the webhook route returns 500 before reaching
+  `handleCaptured` at all) — both are documented together in Known Gaps
+  rather than stood up with fake credentials just to exercise one more
+  code path.
+- 108 Vitest tests total, lint/typecheck/build clean.
+
 ## Known gaps (not failures — out of scope so far)
 
 Everything from Stage 1's list that's still open, plus:
 
 - **No real Razorpay account** — paid enrollment (Stage 6) is fully
   wired but dormant; manual click-through through an actual checkout is
-  only possible once real (or test-mode) `RAZORPAY_*` keys exist.
-- Notifications and the handful of remaining small ops items are still
-  deferred from Stage 5/6's scoping — see "Immediate next steps" there.
+  only possible once real (or test-mode) `RAZORPAY_*` keys exist. This
+  also means `notifyPaymentCaptured` (Stage 7) has never actually fired
+  against a real webhook delivery.
+- **No real Resend account** — email notifications (Stage 7) are fully
+  wired but every send is currently a logged no-op; a real email being
+  delivered is only possible once real `RESEND_API_KEY`/`EMAIL_FROM`
+  values exist.
+- The handful of remaining small ops items (leaked-password-protection
+  toggle, the `acme` test institute decision, real Bunny Stream
+  credentials) are still open from Stage 1's original list.
 
 The `max_attempts` concurrency race from Stage 2's list is now fixed (see
 Stage 5 above).

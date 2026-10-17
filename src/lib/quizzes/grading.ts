@@ -1,6 +1,7 @@
 import "server-only";
 
 import { logAudit } from "@/lib/audit/log";
+import { notifyAttemptGraded } from "@/lib/notifications/send";
 import type { AnswerKeyRow, SubmittedAnswer } from "@/lib/quizzes/correctness";
 import { isQuestionCorrect } from "@/lib/quizzes/correctness";
 import { getClientIp } from "@/lib/request-ip";
@@ -285,6 +286,21 @@ export async function finalizeIfExpired(
     },
     ip: await getClientIp(),
   });
+
+  const { data: quiz } = await admin
+    .from("quizzes")
+    .select("title")
+    .eq("id", attempt.quiz_id)
+    .maybeSingle();
+  if (quiz) {
+    await notifyAttemptGraded({
+      studentId: attempt.student_id,
+      quizTitle: quiz.title as string,
+      score,
+      maxScore,
+      status: nextStatus === "timed_out" ? "timed_out" : "submitted",
+    });
+  }
 
   return { status: nextStatus, finalized: true };
 }

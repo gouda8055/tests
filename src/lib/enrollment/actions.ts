@@ -6,6 +6,7 @@ import { requireTenantRole } from "@/lib/auth/guard";
 import { logAudit } from "@/lib/audit/log";
 import { canManage } from "@/lib/courses/ownership";
 import { formField } from "@/lib/form-data";
+import { notifyEnrollmentConfirmed } from "@/lib/notifications/send";
 import { getClientIp } from "@/lib/request-ip";
 import { createServerClient } from "@/lib/supabase/server";
 import { courseIdSchema, enrollmentIdSchema } from "@/lib/validation/courses";
@@ -31,7 +32,7 @@ export async function enrollInCourse(
   const supabase = await createServerClient();
   const { data: course } = await supabase
     .from("courses")
-    .select("id, institute_id, status, archived_at")
+    .select("id, institute_id, status, archived_at, title")
     .eq("id", parsed.data.courseId)
     .maybeSingle();
 
@@ -71,6 +72,8 @@ export async function enrollInCourse(
     metadata: { courseId: course.id },
     ip: await getClientIp(),
   });
+
+  await notifyEnrollmentConfirmed({ studentId: actor.id, courseTitle: course.title });
 
   refresh();
   return { success: "You're enrolled." };

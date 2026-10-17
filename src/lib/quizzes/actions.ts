@@ -7,6 +7,7 @@ import { requireTenantRole, type SessionProfile } from "@/lib/auth/guard";
 import { logAudit } from "@/lib/audit/log";
 import { canManage } from "@/lib/courses/ownership";
 import { formCheckbox, formField, formFields } from "@/lib/form-data";
+import { notifyQuizPublished } from "@/lib/notifications/send";
 import { parseQuestionsCsv } from "@/lib/quizzes/csv-import";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/request-ip";
@@ -288,6 +289,21 @@ export async function setQuizStatus(
     metadata: { courseId: loaded.quiz.courseId },
     ip: await getClientIp(),
   });
+
+  if (parsed.data.status === "published") {
+    const [{ data: quizRow }, { data: enrollments }] = await Promise.all([
+      supabase.from("quizzes").select("title, courses(title)").eq("id", data.id).maybeSingle(),
+      supabase.from("enrollments").select("student_id").eq("course_id", loaded.quiz.courseId),
+    ]);
+    const course = quizRow?.courses as unknown as { title: string } | null;
+    if (quizRow && course) {
+      await notifyQuizPublished({
+        studentIds: (enrollments ?? []).map((row) => row.student_id as string),
+        courseTitle: course.title,
+        quizTitle: quizRow.title as string,
+      });
+    }
+  }
 
   refresh();
   return { success: `Quiz is now ${parsed.data.status}.` };

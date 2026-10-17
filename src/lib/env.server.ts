@@ -39,6 +39,14 @@ const serverEnvSchema = z.object({
   RAZORPAY_KEY_ID: optionalString,
   RAZORPAY_KEY_SECRET: optionalString,
   RAZORPAY_WEBHOOK_SECRET: optionalString,
+  // Resend (Stage 7 email notifications). Optional: every send degrades
+  // to a logged no-op, never an action failure — see
+  // src/lib/notifications/resend.ts. Unlike Bunny/Razorpay, the *feature*
+  // isn't user-facing-dormant (there's no button that says "not
+  // configured"); the actions these are attached to (enroll, publish,
+  // submit) always succeed regardless of whether email is set up.
+  RESEND_API_KEY: optionalString,
+  EMAIL_FROM: optionalString,
 });
 
 function parseServerEnv() {
@@ -52,6 +60,8 @@ function parseServerEnv() {
     RAZORPAY_KEY_ID: process.env.RAZORPAY_KEY_ID,
     RAZORPAY_KEY_SECRET: process.env.RAZORPAY_KEY_SECRET,
     RAZORPAY_WEBHOOK_SECRET: process.env.RAZORPAY_WEBHOOK_SECRET,
+    RESEND_API_KEY: process.env.RESEND_API_KEY,
+    EMAIL_FROM: process.env.EMAIL_FROM,
   });
 
   if (!parsed.success) {
@@ -85,4 +95,8 @@ export const isRazorpayConfigured = Boolean(
   serverEnv.RAZORPAY_KEY_ID &&
     serverEnv.RAZORPAY_KEY_SECRET &&
     serverEnv.RAZORPAY_WEBHOOK_SECRET,
+);
+
+export const isResendConfigured = Boolean(
+  serverEnv.RESEND_API_KEY && serverEnv.EMAIL_FROM,
 );

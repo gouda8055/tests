@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { isRazorpayConfigured, serverEnv } from "@/lib/env.server";
 import { logAudit } from "@/lib/audit/log";
+import { notifyPaymentCaptured } from "@/lib/notifications/send";
 import { verifyRazorpayWebhookSignature } from "@/lib/payments/signature";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -72,7 +73,9 @@ async function handleCaptured(payment: RazorpayPaymentEntity): Promise<void> {
 
   const { data: paymentRow } = await admin
     .from("payments")
-    .select("id, institute_id, course_id, student_id, status, amount_paise, currency")
+    .select(
+      "id, institute_id, course_id, student_id, status, amount_paise, currency, courses(title)",
+    )
     .eq("razorpay_order_id", payment.order_id)
     .maybeSingle();
 
@@ -132,6 +135,16 @@ async function handleCaptured(payment: RazorpayPaymentEntity): Promise<void> {
     metadata: { courseId: paymentRow.course_id, razorpayPaymentId: payment.id },
     ip: null,
   });
+
+  const course = paymentRow.courses as unknown as { title: string } | null;
+  if (course) {
+    await notifyPaymentCaptured({
+      studentId: paymentRow.student_id,
+      courseTitle: course.title,
+      amountPaise: paymentRow.amount_paise,
+      currency: paymentRow.currency,
+    });
+  }
 }
 
 async function handleFailed(payment: RazorpayPaymentEntity): Promise<void> {
