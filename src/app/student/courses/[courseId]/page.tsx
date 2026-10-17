@@ -9,6 +9,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { EnrollForm } from "@/components/courses/enroll-form";
 import { CheckoutButton } from "@/components/payments/checkout-button";
 import { ConfirmActionDialog } from "@/components/shared/confirm-action-dialog";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default async function StudentCoursePage({
@@ -70,14 +71,19 @@ export default async function StudentCoursePage({
           ) : null}
         </div>
         {enrollment ? (
-          <ConfirmActionDialog
-            action={unenrollFromCourse}
-            fields={[["enrollmentId", enrollment.id]]}
-            triggerLabel="Unenroll"
-            title="Unenroll from this course?"
-            description="You'll lose access to its lessons and quizzes until you re-enroll. Your existing attempt records are kept."
-            confirmLabel="Confirm unenroll"
-          />
+          <div className="flex shrink-0 items-center gap-2">
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/student/courses/${course.id}/certificate`}>Certificate</Link>
+            </Button>
+            <ConfirmActionDialog
+              action={unenrollFromCourse}
+              fields={[["enrollmentId", enrollment.id]]}
+              triggerLabel="Unenroll"
+              title="Unenroll from this course?"
+              description="You'll lose access to its lessons and quizzes until you re-enroll. Your existing attempt records are kept."
+              confirmLabel="Confirm unenroll"
+            />
+          </div>
         ) : null}
       </div>
 

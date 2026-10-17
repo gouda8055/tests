@@ -51,6 +51,15 @@ export default async function CourseRosterPage({
       )
     : new Map<string, string>();
 
+  // RLS lets institute staff read any certificate in their institute.
+  const { data: certificates } = await supabase
+    .from("certificates")
+    .select("student_id")
+    .eq("course_id", course.id);
+  const certifiedStudentIds = new Set(
+    (certificates ?? []).map((certificate) => certificate.student_id as string),
+  );
+
   return (
     <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 p-8">
       <div>
@@ -79,6 +88,7 @@ export default async function CourseRosterPage({
                   <TableHead>Student</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Enrolled</TableHead>
+                  <TableHead>Certificate</TableHead>
                   {canRemoveStudents ? <TableHead /> : null}
                 </TableRow>
               </TableHeader>
@@ -93,6 +103,13 @@ export default async function CourseRosterPage({
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {formatDateTime(enrollment.enrolled_at)}
+                    </TableCell>
+                    <TableCell>
+                      {certifiedStudentIds.has(enrollment.student_id as string) ? (
+                        <span className="text-xs font-medium text-green-700">Issued</span>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">Not issued</span>
+                      )}
                     </TableCell>
                     {canRemoveStudents ? (
                       <TableCell className="text-right">

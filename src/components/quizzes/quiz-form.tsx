@@ -33,6 +33,7 @@ export type QuizFormValues = {
   randomizeOptions: boolean;
   showAnswersAfterSubmit: boolean;
   poolSize: number | null;
+  passingScorePercent: number | null;
 };
 
 /** Create (pass courseId) or edit (pass quiz) a quiz's settings. */
@@ -143,6 +144,23 @@ export function QuizForm({
         <p className="text-muted-foreground text-xs">
           Leave blank to show every question. Set a number to show that many,
           randomly chosen, to each student each attempt.
+        </p>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="quizPassingScore">Passing score (%, optional)</Label>
+        <Input
+          id="quizPassingScore"
+          name="passingScorePercent"
+          type="number"
+          min={0}
+          max={100}
+          defaultValue={quiz?.passingScorePercent ?? ""}
+          placeholder="Doesn't count toward completion"
+        />
+        <p className="text-muted-foreground text-xs">
+          Leave blank if this quiz shouldn&apos;t count toward a course
+          completion certificate. Set a percentage to require students
+          score at least that much on this quiz (among others) to earn one.
         </p>
       </div>
       <div className="flex flex-col gap-3">

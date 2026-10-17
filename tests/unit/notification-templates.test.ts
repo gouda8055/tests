@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   attemptGradedEmail,
+  courseCompletedEmail,
   enrollmentConfirmedEmail,
   escapeHtml,
   paymentReceiptEmail,
@@ -89,5 +90,19 @@ describe("attemptGradedEmail", () => {
       status: "timed_out",
     });
     expect(html).toContain("Time ran out");
+  });
+});
+
+describe("courseCompletedEmail", () => {
+  it("includes the course title in subject and body", () => {
+    const { subject, html } = courseCompletedEmail({ courseTitle: "Intro to Algebra" });
+    expect(subject).toContain("Intro to Algebra");
+    expect(html).toContain("Intro to Algebra");
+  });
+
+  it("escapes a hostile course title in the HTML body", () => {
+    const { html } = courseCompletedEmail({ courseTitle: HOSTILE_TITLE });
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img");
   });
 });

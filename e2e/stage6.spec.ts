@@ -102,6 +102,7 @@ test.describe("Stage 6: paid enrollment (dormant — no Razorpay account configu
     };
     warn("payments", (await admin.from("payments").delete().eq("institute_id", instituteId)).error);
     warn("enrollments", (await admin.from("enrollments").delete().eq("institute_id", instituteId)).error);
+    warn("certificates", (await admin.from("certificates").delete().eq("institute_id", instituteId)).error);
     warn("courses", (await admin.from("courses").delete().eq("institute_id", instituteId)).error);
     warn("audit_logs", (await admin.from("audit_logs").delete().eq("institute_id", instituteId)).error);
 

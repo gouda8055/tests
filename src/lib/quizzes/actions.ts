@@ -102,6 +102,7 @@ function quizInput(formData: FormData) {
     randomizeOptions: formCheckbox(formData, "randomizeOptions"),
     showAnswersAfterSubmit: formCheckbox(formData, "showAnswersAfterSubmit"),
     poolSize: formField(formData, "poolSize"),
+    passingScorePercent: formField(formData, "passingScorePercent"),
   };
 }
 
@@ -167,6 +168,7 @@ export async function createQuiz(
       randomize_options: parsed.data.randomizeOptions,
       show_answers_after_submit: parsed.data.showAnswersAfterSubmit,
       pool_size: parsed.data.poolSize ?? null,
+      passing_score_percent: parsed.data.passingScorePercent ?? null,
     })
     .select("id")
     .single();
@@ -227,6 +229,7 @@ export async function updateQuiz(
       randomize_options: parsed.data.randomizeOptions,
       show_answers_after_submit: parsed.data.showAnswersAfterSubmit,
       pool_size: parsed.data.poolSize ?? null,
+      passing_score_percent: parsed.data.passingScorePercent ?? null,
     })
     .eq("id", parsed.data.quizId)
     .select("id")

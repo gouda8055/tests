@@ -1,17 +1,18 @@
 # Handoff
 
 Everything below reflects the state of `claude/security-multi-tenant-lms-e5198b`
-after Stage 7. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
+after Stage 8. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
 lessons, enrollment, video, quizzes/exams), Stage 3 (scheduled quiz-attempt
 auto-expiry), Stage 4 (unenroll, bulk question import, gradebook export),
 Stage 5 (question pools, short-answer questions, the attempt-limit race
 fix, quiz analytics, an audit log viewer, account settings, and course
-search), Stage 6 (paid enrollment via Razorpay), and Stage 7 (email
-notifications) are all built, committed, and pushed — to this branch
-directly, which is this repo's default branch (there's no separate
-`main`; everything lands here straight, no PR workflow). `README.md` has
-setup steps, `SECURITY.md` is the mandatory rulebook. This file is the
-map, in the order the seven stages happened.
+search), Stage 6 (paid enrollment via Razorpay), Stage 7 (email
+notifications), and Stage 8 (certificates of completion) are all built,
+committed, and pushed — to this branch directly, which is this repo's
+default branch (there's no separate `main`; everything lands here
+straight, no PR workflow). `README.md` has setup steps, `SECURITY.md` is
+the mandatory rulebook. This file is the map, in the order the eight
+stages happened.
 
 ## Access you'll need
 
@@ -19,7 +20,7 @@ map, in the order the seven stages happened.
   (the default branch — push here directly).
 - **Supabase project**: `lms-exam-saas`, ref `uprhdpwfztdeifhktwww`, region
   `ap-south-1`. Separate from any other project on the account — see
-  SECURITY.md §2. Migrations `0001`–`0026` are applied.
+  SECURITY.md §2. Migrations `0001`–`0027` are applied.
 - **`.env.local`** (gitignored, create it yourself): real
   `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` are in the
   README's Getting Started section. **`SUPABASE_SERVICE_ROLE_KEY` is not in
@@ -48,6 +49,8 @@ map, in the order the seven stages happened.
   send just silently no-ops (logged) and the action it's attached to
   (enroll/publish/submit) succeeds exactly the same either way. See the
   Stage 7 section below.
+- **Certificates** (Stage 8): no external account needed — PDF generation
+  is local (`pdf-lib`), no new env vars. Nothing to configure.
 
 ## Stage 2 — courses, lessons, enrollment, video, quizzes/exams
 
@@ -195,11 +198,10 @@ independent of this.
 6. Get a real Resend account and set `RESEND_API_KEY`/`EMAIL_FROM` — see
    the Stage 7 section below — once notifications actually need to send
    rather than stay a logged no-op.
-7. Decide on a Stage 8 scope — there's no brief for it yet. Only the
-   small ops loose ends remain deferred (leaked-password-protection
-   toggle, the `acme` test institute decision, real Bunny Stream
-   credentials) — everything else originally scoped across Stages 5-7
-   is done.
+7. Only the small ops loose ends remain deferred (leaked-password-
+   protection toggle, the `acme` test institute decision, real Bunny
+   Stream credentials) — everything else originally scoped across
+   Stages 5-8 is done. No brief exists yet for a Stage 9.
 
 ## Stage 3 — scheduled quiz-attempt auto-expiry
 
@@ -668,6 +670,144 @@ each wired into a trigger point that already existed.
   rather than stood up with fake credentials just to exercise one more
   code path.
 - 108 Vitest tests total, lint/typecheck/build clean.
+
+## Stage 8 — certificates of completion
+
+Deferred since Stage 5 specifically because it needed "a clearer idea of
+what a certificate should look like." Resolved this stage by asking: the
+user explicitly chose **course-level** completion — pass every quiz the
+instructor has marked as counting, not just one quiz — over the simpler
+single-quiz alternative that was actually recommended. Worth knowing if
+you extend this: the whole-course semantics is a deliberate user choice,
+not the path of least resistance.
+
+### What's built
+
+- **`quizzes.passing_score_percent`** (`0027_certificates.sql`, nullable,
+  `check (... between 0 and 100)`) — a quiz with this unset doesn't count
+  toward a course's completion requirement at all, so an instructor can
+  keep practice/ungraded quizzes alongside the ones that matter without
+  forcing a threshold on every quiz. Set via a new "Passing score (%,
+  optional)" field in `quiz-form.tsx`, same empty-string-sentinel pattern
+  `poolSize` already used.
+- **`certificates` table** (`0027_certificates.sql`) — `id, institute_id,
+  course_id, student_id, issued_at`, `unique(course_id, student_id)`: one
+  certificate per student per course, ever, immutable once issued (no
+  re-issuance/revocation this stage, matching this schema's standing
+  no-delete-policy norm). Select policy: own row (student) or institute
+  staff (owner/instructor), same shape as `payments_select`. **No insert/
+  update/delete policy for any authenticated role, at all** — only the
+  service-role completion-check path ever writes one, the same reasoning
+  as `payments`: a credential-like record an institute might rely on for
+  compliance shouldn't be self-issuable by the student it's about.
+- **`src/lib/certificates/requirements.ts`** — `getCourseCompletionRequirements(courseId, studentId)`,
+  the single source of truth for "has this student completed this
+  course," used by both the completion-check (below) and the student
+  progress page, so the two can never drift apart. Only quizzes with
+  `passing_score_percent` set count; percentage-based (not raw score),
+  same reasoning as Stage 5's analytics page — `pool_size` means
+  `max_score` isn't constant even within one quiz's own attempts, let
+  alone across different quizzes. Admin client throughout, since this
+  must run identically whether called from the student's own session
+  (progress page) or `finalizeIfExpired`'s service-role context.
+- **`src/lib/certificates/completion.ts`** — `checkAndIssueCertificate`:
+  if every required quiz is passed, inserts a `certificates` row via the
+  admin client and treats a `23505` unique-violation as "already issued,"
+  not an error (same idiom the Razorpay webhook already uses for its own
+  duplicate-delivery case). Only on a genuinely new insert does it call
+  `notifyCourseCompleted` (another Stage 7 template/orchestration
+  function, same "never block the real action" try/catch wrapping as
+  every other notification). Called from `finalizeIfExpired`
+  (`grading.ts`), right after its existing `notifyAttemptGraded` call —
+  the natural moment an attempt just got graded is exactly when a course
+  might newly become complete. No new idempotency mechanism needed: the
+  unique constraint already makes a repeat check a safe no-op.
+- **PDF generation** (`src/lib/certificates/pdf.ts`, new `pdf-lib`
+  dependency — pure JS, no native binaries, fits Vercel serverless) — a
+  single-page, plain text-only layout (institute name, "Certificate of
+  Completion", student name, course title, issue date, the certificate
+  id as a verification code). No logo/branding embedding this stage.
+- **Routes**:
+  - `/student/courses/[courseId]/certificate` — download link +
+    verification URL if a certificate exists; otherwise a per-quiz
+    pass/fail progress list (reusing `getCourseCompletionRequirements`)
+    or a "not set up yet" message if the course has no counting quizzes.
+    Linked from the student course detail page via a "Certificate"
+    button next to Unenroll.
+  - `/api/certificates/[certificateId]/pdf` — GET,
+    `requireRole(['student','institute_owner','instructor'])`; real
+    authorization is `certificates_select`'s RLS via the **session
+    client**, no service-role needed here at all.
+  - `/verify/[certificateId]` — intentionally **public, no auth guard at
+    all** (the whole point is that someone without an account — e.g. an
+    employer — can check a certificate is real). One narrow, justified
+    service-role read, same "narrow and justified" precedent as every
+    other service-role use in this codebase, selecting only the minimal
+    safe fields.
+- **Roster page** — a "Certificate" column (issued/not-issued badge per
+  enrolled student), reusing the roster's existing query shape.
+
+### Scope cuts
+
+- No instructor-wide "all certificates across all courses" dashboard —
+  just the per-course roster badge.
+- No re-issuance/revocation — immutable once granted.
+- No logo/branding embedding in the PDF.
+
+### Verified
+
+- `tests/rls/certificates.test.ts` (new, live): a student reads their own
+  certificate but not another student's; institute staff read any
+  certificate in their institute; staff from a *different* institute
+  cannot; no authenticated role — student or instructor — can insert a
+  certificate directly (same INSERT-vs-UPDATE/DELETE RLS semantics as
+  Stage 6's `payments.test.ts`: a missing insert policy is a hard
+  Postgres `42501` error, not a silent 0-row result).
+- `tests/unit/notification-templates.test.ts` extended with
+  `courseCompletedEmail` coverage (subject/body contains the course
+  title, hostile-title escaping) — same pattern as the other four
+  templates.
+- `e2e/stage8.spec.ts` (new, real dev server): seeds a course with two
+  counting quizzes (`passing_score_percent: 100` each); a student passes
+  only the first — the certificate page shows "Not yet earned" with a
+  per-quiz progress list (one "Passed," one "Needs 100%"); the student
+  then passes the second too — the certificate page flips to "Certificate
+  earned" with a working download link and a `/verify/[certificateId]`
+  link; a brand-new, unauthenticated browser context hits that `/verify`
+  URL directly and sees "Valid certificate" with the right course title —
+  confirming the public verification page genuinely needs no session.
+- One real TypeScript fix needed before this typechecked: `new
+  NextResponse(pdfBytes, ...)` (a bare `Uint8Array`) doesn't satisfy
+  Next's `BodyInit` typing — wrapped in `Buffer.from(pdfBytes)` instead.
+- **One real bug found via e2e regression testing, not assumed**: saving
+  a quiz's settings with the new "Passing score" field left blank
+  silently set `passing_score_percent` to `0` instead of leaving it
+  `null`. Root cause: `z.coerce.number()`'s first step is `Number(value)`,
+  and `Number("") === 0` in JS — since `0` passes `.min(0).max(100)`,
+  Zod's `union` picked that branch over the `z.literal("")` fallback
+  before ever trying it, for any min-is-0 schema (unlike `poolSize`,
+  which uses `.positive()` and so correctly rejects 0, falling through to
+  the literal branch). A quiz landing on `passing_score_percent: 0` is
+  trivially "passed" by any attempt (or even by zero attempts, since the
+  best-score default is also 0) — found because it caused a real
+  certificate to be issued for Stage 5's unrelated regression-test course
+  and permanently blocked that test's fixture cleanup (`certificates`
+  has no delete policy for any role, only the service-role path; the
+  table has no `ON DELETE CASCADE` from `courses` either, by design).
+  Fixed in `src/lib/validation/quizzes.ts` by reordering the union
+  (`z.literal("")` first) and covered by a dedicated
+  `tests/unit/validation-quizzes.test.ts`. Also added a `certificates`
+  cleanup line (before the `courses` delete) to every pre-existing e2e
+  spec whose `afterAll` creates courses (`course-quiz-flow`,
+  `cron-finalize-expired-attempts`, `stage4`–`stage7`) — none of them
+  knew about this new child table, and without it a future certificate
+  (buggy or legitimate) permanently orphans that spec's fixture institute.
+- Full Supabase security-advisor check: no new findings from this
+  stage's migration — the four pre-existing findings (the
+  `rate_limit_events` RLS-enabled-no-policy info note and three
+  `SECURITY DEFINER`-function warnings, all pre-dating Stage 8 and
+  already understood/accepted) are unchanged.
+- 120 Vitest tests total, lint/typecheck/build clean.
 
 ## Known gaps (not failures — out of scope so far)
 

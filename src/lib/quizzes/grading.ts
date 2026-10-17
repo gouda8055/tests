@@ -1,6 +1,7 @@
 import "server-only";
 
 import { logAudit } from "@/lib/audit/log";
+import { checkAndIssueCertificate } from "@/lib/certificates/completion";
 import { notifyAttemptGraded } from "@/lib/notifications/send";
 import type { AnswerKeyRow, SubmittedAnswer } from "@/lib/quizzes/correctness";
 import { isQuestionCorrect } from "@/lib/quizzes/correctness";
@@ -289,7 +290,7 @@ export async function finalizeIfExpired(
 
   const { data: quiz } = await admin
     .from("quizzes")
-    .select("title")
+    .select("title, course_id")
     .eq("id", attempt.quiz_id)
     .maybeSingle();
   if (quiz) {
@@ -299,6 +300,14 @@ export async function finalizeIfExpired(
       score,
       maxScore,
       status: nextStatus === "timed_out" ? "timed_out" : "submitted",
+    });
+
+    // The natural moment a course might newly become complete: right
+    // after an attempt is graded.
+    await checkAndIssueCertificate({
+      instituteId: attempt.institute_id,
+      courseId: quiz.course_id as string,
+      studentId: attempt.student_id,
     });
   }
 

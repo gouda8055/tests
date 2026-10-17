@@ -47,6 +47,19 @@ const quizFields = z.object({
     ])
     .optional()
     .transform((value) => (value === "" || value === undefined ? undefined : value)),
+  // Blank means "doesn't count toward course completion" (Stage 8). Unlike
+  // poolSize above, 0 is a legitimate passing score, so z.literal("") must
+  // come FIRST in the union: Number("") coerces to 0, and 0 passes
+  // min(0).max(100), so a coerce-number branch tried first would "win"
+  // over the empty-string branch and silently turn a blank field into a
+  // real (and trivially-satisfied) 0% requirement.
+  passingScorePercent: z
+    .union([
+      z.literal(""),
+      z.coerce.number().int().min(0).max(100, "Passing score must be 0-100."),
+    ])
+    .optional()
+    .transform((value) => (value === "" || value === undefined ? undefined : value)),
 });
 
 export const createQuizSchema = quizFields.extend({ courseId: z.string().uuid() });

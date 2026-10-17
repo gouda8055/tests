@@ -116,6 +116,7 @@ test.describe("course authoring + quiz attempt, end to end", () => {
       (await admin.from("enrollments").delete().eq("institute_id", instituteId)).error,
     );
     warn("lessons", (await admin.from("lessons").delete().eq("institute_id", instituteId)).error);
+    warn("certificates", (await admin.from("certificates").delete().eq("institute_id", instituteId)).error);
     warn("courses", (await admin.from("courses").delete().eq("institute_id", instituteId)).error);
     warn(
       "audit_logs",

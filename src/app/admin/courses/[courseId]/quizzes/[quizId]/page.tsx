@@ -35,7 +35,7 @@ export default async function AdminQuizPage({
     supabase
       .from("quizzes")
       .select(
-        "id, course_id, lesson_id, created_by, title, description, status, archived_at, duration_seconds, grace_seconds, max_attempts, randomize_questions, randomize_options, show_answers_after_submit, pool_size",
+        "id, course_id, lesson_id, created_by, title, description, status, archived_at, duration_seconds, grace_seconds, max_attempts, randomize_questions, randomize_options, show_answers_after_submit, pool_size, passing_score_percent",
       )
       .eq("id", quizId)
       .eq("course_id", courseId)
@@ -200,6 +200,7 @@ export default async function AdminQuizPage({
                 randomizeOptions: quiz.randomize_options,
                 showAnswersAfterSubmit: quiz.show_answers_after_submit,
                 poolSize: quiz.pool_size,
+                passingScorePercent: quiz.passing_score_percent,
               }}
             />
           </TabsContent>

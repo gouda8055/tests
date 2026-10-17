@@ -4,6 +4,7 @@ import { getUserEmails } from "@/lib/notifications/recipients";
 import { sendEmail } from "@/lib/notifications/resend";
 import {
   attemptGradedEmail,
+  courseCompletedEmail,
   enrollmentConfirmedEmail,
   paymentReceiptEmail,
   quizPublishedEmail,
@@ -68,6 +69,20 @@ export async function notifyQuizPublished(params: {
     await Promise.all([...emails.values()].map((to) => sendEmail({ to, subject, html })));
   } catch (error) {
     console.error("notifyQuizPublished failed:", error);
+  }
+}
+
+export async function notifyCourseCompleted(params: {
+  studentId: string;
+  courseTitle: string;
+}): Promise<void> {
+  try {
+    const to = (await getUserEmails([params.studentId])).get(params.studentId);
+    if (!to) return;
+    const { subject, html } = courseCompletedEmail({ courseTitle: params.courseTitle });
+    await sendEmail({ to, subject, html });
+  } catch (error) {
+    console.error("notifyCourseCompleted failed:", error);
   }
 }
 

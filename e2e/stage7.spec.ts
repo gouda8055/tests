@@ -155,6 +155,7 @@ test.describe("Stage 7: notifications never block the action they're attached to
     warn("quiz_questions", (await admin.from("quiz_questions").delete().eq("institute_id", instituteId)).error);
     warn("quizzes", (await admin.from("quizzes").delete().eq("institute_id", instituteId)).error);
     warn("enrollments", (await admin.from("enrollments").delete().eq("institute_id", instituteId)).error);
+    warn("certificates", (await admin.from("certificates").delete().eq("institute_id", instituteId)).error);
     warn("courses", (await admin.from("courses").delete().eq("institute_id", instituteId)).error);
     warn("audit_logs", (await admin.from("audit_logs").delete().eq("institute_id", instituteId)).error);
 

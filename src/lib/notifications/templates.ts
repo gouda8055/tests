@@ -76,6 +76,17 @@ export function quizPublishedEmail(params: {
   };
 }
 
+export function courseCompletedEmail(params: { courseTitle: string }): EmailContent {
+  const courseTitle = escapeHtml(params.courseTitle);
+  return {
+    subject: `You've completed ${courseTitle}`,
+    html: emailShell(
+      "Congratulations!",
+      `<p>You've passed every required quiz in <strong>${courseTitle}</strong>. Your certificate of completion is ready — visit the course page to download it.</p>`,
+    ),
+  };
+}
+
 export function attemptGradedEmail(params: {
   quizTitle: string;
   score: number;
