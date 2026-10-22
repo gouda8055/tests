@@ -17,6 +17,28 @@ const nextConfig: NextConfig = {
       },
     },
   },
+  // Stage 9 (production readiness, SECURITY.md §11): a baseline security
+  // header set. Deliberately no CSP here — Razorpay's Checkout.js is
+  // loaded from their CDN at runtime (checkout-button.tsx), and getting a
+  // CSP right for that (plus any other third-party script origin) needs
+  // its own dedicated pass rather than shipping one that's either broken
+  // or too loose to mean anything.
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          // Nothing in this app embeds itself (or is embedded) in an
+          // iframe anywhere.
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

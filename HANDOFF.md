@@ -1,18 +1,18 @@
 # Handoff
 
 Everything below reflects the state of `claude/security-multi-tenant-lms-e5198b`
-after Stage 8. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
+after Stage 9. Stage 1 (tenancy, auth, platform admin), Stage 2 (courses,
 lessons, enrollment, video, quizzes/exams), Stage 3 (scheduled quiz-attempt
 auto-expiry), Stage 4 (unenroll, bulk question import, gradebook export),
 Stage 5 (question pools, short-answer questions, the attempt-limit race
 fix, quiz analytics, an audit log viewer, account settings, and course
 search), Stage 6 (paid enrollment via Razorpay), Stage 7 (email
-notifications), and Stage 8 (certificates of completion) are all built,
-committed, and pushed — to this branch directly, which is this repo's
-default branch (there's no separate `main`; everything lands here
-straight, no PR workflow). `README.md` has setup steps, `SECURITY.md` is
-the mandatory rulebook. This file is the map, in the order the eight
-stages happened.
+notifications), Stage 8 (certificates of completion), and Stage 9
+(production readiness pass) are all built, committed, and pushed — to
+this branch directly, which is this repo's default branch (there's no
+separate `main`; everything lands here straight, no PR workflow).
+`README.md` has setup steps, `SECURITY.md` is the mandatory rulebook.
+This file is the map, in the order the nine stages happened.
 
 ## Access you'll need
 
@@ -20,7 +20,7 @@ stages happened.
   (the default branch — push here directly).
 - **Supabase project**: `lms-exam-saas`, ref `uprhdpwfztdeifhktwww`, region
   `ap-south-1`. Separate from any other project on the account — see
-  SECURITY.md §2. Migrations `0001`–`0027` are applied.
+  SECURITY.md §2. Migrations `0001`–`0028` are applied.
 - **`.env.local`** (gitignored, create it yourself): real
   `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` are in the
   README's Getting Started section. **`SUPABASE_SERVICE_ROLE_KEY` is not in
@@ -809,6 +809,124 @@ not the path of least resistance.
   already understood/accepted) are unchanged.
 - 120 Vitest tests total, lint/typecheck/build clean.
 
+## Stage 9 — production readiness pass
+
+Not a new feature — an audit of the whole app against `SECURITY.md` §11
+(dependencies & infrastructure) and §12 (definition-of-done checklist),
+and closing what that audit found. The audit itself: Supabase Security +
+Performance Advisors, `pnpm audit`, a grep-based inventory of every
+`checkRateLimit`/`logAudit` call site across every stage, and reading
+every "risky"-looking `SECURITY DEFINER` function's actual SQL body
+rather than trusting the advisor's one-line description.
+
+### What's built (real gaps, fixed)
+
+- **Security headers** (`next.config.ts`) — a `headers()` function
+  returning a baseline set (`X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy:
+  strict-origin-when-cross-origin`, `Strict-Transport-Security`,
+  `Permissions-Policy` disabling camera/mic/geolocation) on every route.
+  **Deliberately no CSP** — Razorpay's Checkout.js loads from their CDN
+  at runtime (`checkout-button.tsx`), and a CSP that's actually correct
+  for that (plus any other third-party origin) needs its own focused
+  pass; shipping one that's either broken or too loose to mean anything
+  would be worse than shipping none yet.
+- **Enrollment rate limiting** (`src/lib/enrollment/actions.ts`) —
+  `enrollInCourse`/`unenrollFromCourse` were the only mutating actions in
+  the entire codebase with no `checkRateLimit` call. Added
+  `"enrollment.create"`/`"enrollment.delete"`, 20/hour per student, same
+  shape as `payments.create-order`. Matters more than it looks: unbounded
+  `enrollInCourse` calls mean unbounded (eventually paid) email sends
+  once Resend is configured (Stage 7).
+- **Gradebook export audit logging** (the `.../export/route.ts` route) —
+  SECURITY.md §10 explicitly requires logging "data exports"; every other
+  mutating action already calls `logAudit`, this one didn't. Added one,
+  action `"quiz.exported"`, right after the quiz is confirmed to exist
+  (so only real exports get logged, not 404s).
+- **DB statement timeout** (`0028_statement_timeouts.sql`) —
+  `statement_timeout = '8s'` on both the `authenticated` and `anon`
+  Postgres roles (the only two roles PostgREST ever connects as for this
+  app). Bounds a runaway or accidental cross-join without touching
+  migrations or admin scripts, which run as a different role entirely.
+
+### Reviewed and left unchanged (document why, so a later session doesn't "fix" these into a broken state)
+
+- **`rate_limit_events` RLS-enabled-no-policy** (Security Advisor, INFO):
+  correct by design. Zero policies means the table is completely
+  unreachable via PostgREST for anon/authenticated — the only access path
+  is the `SECURITY DEFINER` function below, which is exactly the point.
+- **`check_and_record_rate_limit` callable by `anon`** (WARN): must stay
+  anon-callable — rate limiting has to work on signup/login, before any
+  session exists.
+- **`auth_institute_id`/`auth_role`/`is_super_admin`/
+  `student_attempt_count` callable by `authenticated`** (WARN x4): read
+  each function's actual SQL body (not just the advisor's description) —
+  all four filter strictly by `auth.uid()` (the caller's own identity);
+  `student_attempt_count(p_quiz_id)` only ever counts the *caller's own*
+  attempts for a quiz id they supply, never another student's. No
+  cross-tenant leak is possible. These grants are also load-bearing, not
+  just harmless: every RLS policy that calls them runs as the
+  `authenticated`/`anon` role, so revoking `EXECUTE` would break RLS
+  policy evaluation itself across the whole schema, not close a
+  loophole.
+- **`profiles_institute_id_idx` "unused"** (Performance Advisor, INFO):
+  expected at this dataset's size (one dev institute, a few hundred
+  rows). Institute-scoped filtering on `profiles` is exactly the query
+  shape this index exists for once real data volume shows up. Kept.
+- **One `pnpm audit` finding**: a high-severity `braces` ReDoS advisory,
+  but only via `eslint-config-next → @next/eslint-plugin-next → fast-glob
+  → micromatch → braces` — a lint-tooling dev-dependency, never in the
+  production bundle. The advisory itself lists no patched version yet
+  upstream (`<0.0.0`). Nothing to change until one ships.
+
+### Still not actionable by me (manual steps, same as prior stages)
+
+- **Leaked-password-protection toggle** — a Supabase Auth project-level
+  setting (HaveIBeenPwned check), Pro-plan gated, with no MCP tool
+  exposing it. Carried since Stage 1's original list; still open.
+- **"Limit who has production access"** (SECURITY.md §11) — a Supabase
+  dashboard team-member list / Vercel project-access question, not
+  something in the repo to change.
+
+### Explicitly not done this stage (scope, not an oversight)
+
+- **No forgot-password flow.** Confirmed via grep: no
+  `resetPasswordForEmail` call or forgot-password UI exists anywhere in
+  this app. A missing *feature*, not a readiness regression — building
+  it would be new scope, not hardening what exists.
+- **No CSP** — see the security-headers note above.
+
+### Verified
+
+- `tests/rls/rate-limits.test.ts` (new, live): calls the real
+  `check_and_record_rate_limit` RPC directly with the exact bucket
+  naming/limits the new enrollment code uses — 20 calls succeed, the
+  21st is rejected; `enrollment.create` and `enrollment.delete` confirmed
+  to have independent budgets (different bucket-key strings). Chosen
+  over an e2e UI loop deliberately: no prior stage has ever automated
+  rate-limit testing at the UI level (every other bucket has only been
+  verified by code review), and 21 real browser round-trips would be
+  slow for no extra confidence this direct RPC call doesn't already give —
+  same mechanism `checkRateLimit()` itself calls, same bucket shape.
+- `e2e/stage9.spec.ts` (new): one request-only check confirming all five
+  headers are present on a real page load.
+- **Export audit logging verified directly against the live DB**: ran
+  `e2e/stage4.spec.ts` (which already exercises the export route) with
+  its own `audit_logs` cleanup line temporarily commented out, confirmed
+  a real `quiz.exported` row landed with the correct `target`/`metadata`,
+  then restored the test file exactly as it was and deleted the leftover
+  row. (The row's `actor_id`/`institute_id` showed `null` when queried
+  *after* the test's later cleanup steps ran — confirmed via
+  `pg_constraint` that both are `ON DELETE SET NULL` foreign keys, so
+  this is standing, correct behavior for every audit-log action once its
+  referenced user/institute is deleted, not a bug in the new code.)
+- Re-ran Security + Performance Advisors after the migration: no new
+  findings, same four security + one performance findings as before
+  (all reviewed above), confirming the migration didn't introduce
+  anything new.
+- `pnpm lint && pnpm typecheck && pnpm build` clean. 122 Vitest tests
+  total (120 prior + the 2 new rate-limit tests).
+
 ## Known gaps (not failures — out of scope so far)
 
 Everything from Stage 1's list that's still open, plus:
@@ -825,6 +943,12 @@ Everything from Stage 1's list that's still open, plus:
 - The handful of remaining small ops items (leaked-password-protection
   toggle, the `acme` test institute decision, real Bunny Stream
   credentials) are still open from Stage 1's original list.
+- **No CSP** (Stage 9) — needs a focused pass enumerating every
+  third-party script origin (Razorpay's Checkout.js at minimum) first.
+- **No forgot-password flow** — never built in any stage; a product gap,
+  not a readiness regression.
+- **"Limit who has production access"** (SECURITY.md §11) — a Supabase/
+  Vercel team-membership question, not something in the repo to change.
 
 The `max_attempts` concurrency race from Stage 2's list is now fixed (see
 Stage 5 above).

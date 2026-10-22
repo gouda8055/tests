@@ -7,6 +7,7 @@ import { logAudit } from "@/lib/audit/log";
 import { canManage } from "@/lib/courses/ownership";
 import { formField } from "@/lib/form-data";
 import { notifyEnrollmentConfirmed } from "@/lib/notifications/send";
+import { checkRateLimit } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/request-ip";
 import { createServerClient } from "@/lib/supabase/server";
 import { courseIdSchema, enrollmentIdSchema } from "@/lib/validation/courses";
@@ -28,6 +29,9 @@ export async function enrollInCourse(
   const parsed = courseIdSchema.safeParse({ courseId: formField(formData, "courseId") });
   if (!parsed.success) return { error: "Invalid request." };
   if (!actor.instituteId) return { error: "Could not enroll you in this course." };
+
+  const allowed = await checkRateLimit("enrollment.create", 20, 3600, actor.id);
+  if (!allowed) return { error: "Too many attempts. Try again later." };
 
   const supabase = await createServerClient();
   const { data: course } = await supabase
@@ -96,6 +100,9 @@ export async function unenrollFromCourse(
     enrollmentId: formField(formData, "enrollmentId"),
   });
   if (!parsed.success) return { error: "Invalid request." };
+
+  const allowed = await checkRateLimit("enrollment.delete", 20, 3600, actor.id);
+  if (!allowed) return { error: "Too many attempts. Try again later." };
 
   const supabase = await createServerClient();
   const { data: enrollment } = await supabase

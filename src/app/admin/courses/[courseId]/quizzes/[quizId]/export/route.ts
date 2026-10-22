@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 
 import { requireTenantRole } from "@/lib/auth/guard";
+import { logAudit } from "@/lib/audit/log";
 import { stripFormulaPrefix, toCsvRow } from "@/lib/csv";
 import { getStudentNames } from "@/lib/courses/student-names";
 import { formatDateTime } from "@/lib/format";
 import { finalizeExpiredAttempts } from "@/lib/quizzes/grading";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { getClientIp } from "@/lib/request-ip";
 import { createServerClient } from "@/lib/supabase/server";
 
 const ATTEMPT_COLUMNS =
@@ -44,6 +46,17 @@ export async function GET(
     .eq("course_id", courseId)
     .maybeSingle();
   if (!quiz) return NextResponse.json({ error: "Quiz not found." }, { status: 404 });
+
+  // SECURITY.md §10: data exports must be audit-logged, same as every
+  // other mutating/export-shaped action in this codebase.
+  await logAudit({
+    instituteId: actor.instituteId,
+    actorId: actor.id,
+    action: "quiz.exported",
+    target: quiz.id,
+    metadata: { courseId, quizId: quiz.id },
+    ip: await getClientIp(),
+  });
 
   const loadAttempts = () =>
     supabase
